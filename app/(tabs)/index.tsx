@@ -1,98 +1,127 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import TextRecognition, { TextRecognitionResult } from '@react-native-ml-kit/text-recognition';
+import { Asset } from 'expo-asset';
+import * as ImagePicker from 'expo-image-picker';
+import { useEffect, useState } from 'react';
+import { Button, Image, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+export default function Index() {
+  const [result, setResult] = useState<TextRecognitionResult | null>(null);
+  const [imageUri, setImageUri] = useState<string | null>(null);
 
-export default function HomeScreen() {
+  const recognizeText = async (uri: string) => {
+    if (Platform.OS === 'web') {
+      console.log("ML Kit is not supported on web");
+      return;
+    }
+    try {
+      const recognitionResult = await TextRecognition.recognize(uri);
+      setResult(recognitionResult);
+      console.log('Recognized text:', recognitionResult.text);
+    } catch (error) {
+      console.error("Error recognizing text:", error);
+    }
+  };
+
+  const pickImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 1,
+    });
+
+    if (!result.canceled) {
+      setImageUri(result.assets[0].uri);
+      recognizeText(result.assets[0].uri);
+    }
+  };
+
+  useEffect(() => {
+    (async () => {
+      // Load default asset for quick testing
+      try {
+        const imageAsset = Asset.fromModule(require('../../assets/images/react-logo.png')); // Default expo asset
+        await imageAsset.downloadAsync();
+        if (imageAsset.localUri) {
+          // Don't auto-recognize default asset to keep UI clean, or do it if preferred.
+          // setImageUri(imageAsset.localUri);
+          // recognizeText(imageAsset.localUri);
+        }
+      } catch (e) {
+        console.log("Error loading default asset", e);
+      }
+    })();
+  }, []);
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <ScrollView contentContainerStyle={styles.container}>
+      <Text style={styles.header}>ML Kit OCR</Text>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+      <Button title="Pick an Image" onPress={pickImage} />
+
+      {imageUri && (
+        <Image source={{ uri: imageUri }} style={styles.image} />
+      )}
+
+      {result ? (
+        <View style={styles.resultContainer}>
+          <Text style={styles.label}>Full Text:</Text>
+          <Text style={styles.text}>{result.text}</Text>
+
+          <Text style={styles.label}>Blocks:</Text>
+          {result.blocks.map((block, index) => (
+            <View key={index} style={styles.block}>
+              <Text style={styles.blockText}>{block.text}</Text>
+            </View>
+          ))}
+        </View>
+      ) : (
+        <Text style={{ marginTop: 20 }}>Select an image to recognize text.</Text>
+      )}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
+  container: {
+    padding: 20,
     alignItems: 'center',
-    gap: 8,
+    paddingTop: 60,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  header: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 20,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  image: {
+    width: 300,
+    height: 300,
+    resizeMode: 'contain',
+    marginVertical: 20,
+    borderWidth: 1,
+    borderColor: '#ccc',
+  },
+  resultContainer: {
+    width: '100%',
+  },
+  label: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginTop: 10,
+  },
+  text: {
+    fontSize: 16,
+    marginBottom: 10,
+    padding: 10,
+    backgroundColor: '#eee',
+  },
+  block: {
+    marginBottom: 5,
+    padding: 5,
+    backgroundColor: '#f9f9f9',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  blockText: {
+    fontSize: 14,
   },
 });
