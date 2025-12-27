@@ -32,47 +32,64 @@ export default function ScanScreen() {
     if (cameraRef.current && !processing) {
       setProcessing(true);
       try {
-        const candidates: string[] = [];
-        let finalImageUri = '';
+        const capturedPhotos: string[] = [];
 
-        // BURST CAPTURE: Take 3 photos
+        // 1. BURST CAPTURE (Fast as possible)
+        // User only needs to hold still during this phase (approx 200-300ms)
         for (let i = 0; i < 3; i++) {
           const photo = await cameraRef.current.takePictureAsync({
             quality: 1,
             base64: false,
             exif: false,
-            skipProcessing: true // specific to expo-camera (v5+) to speed up slightly if available, else ignored
+            skipProcessing: true
           });
-
           if (photo?.uri) {
-            // Store the last one to use for display
-            finalImageUri = photo.uri;
-
-            // Process & OCR immediately (or waiting until all 3 captured might trigger UI freeze? 
-            // Doing it sequentially here for simplicity, or parallel promises if speed needed)
-            try {
-              const processedUri = await processScoreImage(photo.uri, photo.width, photo.height);
-              finalImageUri = processedUri; // Prefer showing the processed one
-
-              const result = await TextRecognition.recognize(processedUri);
-              const rawText = result.text.match(/\d+/g)?.join('') || '';
-              if (rawText) candidates.push(rawText);
-            } catch (err) {
-              console.warn('Frame processing failed', err);
-            }
+            capturedPhotos.push(photo.uri);
           }
-          // Scan delay (optional, but camera might need ms to reset)
-          await new Promise(r => setTimeout(r, 100));
+          // Tiny delay to ensure frames are slightly different (for de-noising/voting)
+          await new Promise(r => setTimeout(r, 50));
         }
 
-        const consensus = findConsensus(candidates);
-        console.log('Candidates:', candidates, 'Consensus:', consensus);
+        // 2. PARALLEL PROCESSING
+        // User can move phone now, we have the images.
+        if (capturedPhotos.length > 0) {
+          const processedResults = await Promise.all(capturedPhotos.map(async (uri) => {
+            try {
+              // A. Crop & Resize
+              // Note: processScoreImage now internally checks Image.getSize ensures correct orientation/dimensions
+              const processedUri = await processScoreImage(uri, 0, 0);
 
-        if (finalImageUri) {
-          router.push({
-            pathname: '/verify-score',
-            params: { imageUri: finalImageUri, ocrValue: consensus }
-          });
+              // B. OCR
+              const result = await TextRecognition.recognize(processedUri);
+              const rawText = result.text.match(/\d+/g)?.join('') || '';
+
+              return { uri: processedUri, text: rawText };
+            } catch (e) {
+              console.log('Frame processing error', e);
+              return null;
+            }
+          }));
+
+          // Filter valid results
+          const validResults = processedResults.filter(r => r !== null) as { uri: string, text: string }[];
+          const candidates = validResults.map(r => r.text).filter(t => t.length > 0);
+
+          // Consensus
+          const consensus = findConsensus(candidates);
+
+          // SMART SELECTION: Find the specific image that gave us the winning score.
+          // This ensures that if Frame 1 was perfect and Frame 3 was blurry, we show Frame 1.
+          const bestResult = validResults.find(r => r.text === consensus);
+          const finalImageUri = bestResult ? bestResult.uri : (validResults.length > 0 ? validResults[validResults.length - 1].uri : '');
+
+          console.log('Candidates:', candidates, 'Consensus:', consensus, 'Selected Image:', finalImageUri);
+
+          if (finalImageUri) {
+            router.push({
+              pathname: '/verify-score',
+              params: { imageUri: finalImageUri, ocrValue: consensus }
+            });
+          }
         }
 
       } catch (e) {
