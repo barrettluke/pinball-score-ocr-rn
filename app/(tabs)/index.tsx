@@ -1,127 +1,136 @@
-import TextRecognition, { TextRecognitionResult } from '@react-native-ml-kit/text-recognition';
-import { Asset } from 'expo-asset';
-import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useState } from 'react';
-import { Button, Image, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import TextRecognition from '@react-native-ml-kit/text-recognition';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useRouter } from 'expo-router';
+import { useRef, useState } from 'react';
+import { ActivityIndicator, Button, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import CameraOverlay from '../../components/CameraOverlay';
+import { findConsensus } from '../../utils/voting';
 
-export default function Index() {
-  const [result, setResult] = useState<TextRecognitionResult | null>(null);
-  const [imageUri, setImageUri] = useState<string | null>(null);
+import { processScoreImage } from '../../utils/imageProcessing';
 
-  const recognizeText = async (uri: string) => {
-    if (Platform.OS === 'web') {
-      console.log("ML Kit is not supported on web");
-      return;
-    }
-    try {
-      const recognitionResult = await TextRecognition.recognize(uri);
-      setResult(recognitionResult);
-      console.log('Recognized text:', recognitionResult.text);
-    } catch (error) {
-      console.error("Error recognizing text:", error);
-    }
-  };
+export default function ScanScreen() {
+  const [permission, requestPermission] = useCameraPermissions();
+  const [scanned, setScanned] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const cameraRef = useRef<CameraView>(null);
+  const router = useRouter();
 
-  const pickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 1,
-    });
+  if (!permission) {
+    return <View />;
+  }
 
-    if (!result.canceled) {
-      setImageUri(result.assets[0].uri);
-      recognizeText(result.assets[0].uri);
-    }
-  };
+  if (!permission.granted) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.message}>We need your permission to show the camera</Text>
+        <Button onPress={requestPermission} title="grant permission" />
+      </View>
+    );
+  }
 
-  useEffect(() => {
-    (async () => {
-      // Load default asset for quick testing
+  const takePicture = async () => {
+    if (cameraRef.current && !processing) {
+      setProcessing(true);
       try {
-        const imageAsset = Asset.fromModule(require('../../assets/images/react-logo.png')); // Default expo asset
-        await imageAsset.downloadAsync();
-        if (imageAsset.localUri) {
-          // Don't auto-recognize default asset to keep UI clean, or do it if preferred.
-          // setImageUri(imageAsset.localUri);
-          // recognizeText(imageAsset.localUri);
+        const candidates: string[] = [];
+        let finalImageUri = '';
+
+        // BURST CAPTURE: Take 3 photos
+        for (let i = 0; i < 3; i++) {
+          const photo = await cameraRef.current.takePictureAsync({
+            quality: 1,
+            base64: false,
+            exif: false,
+            skipProcessing: true // specific to expo-camera (v5+) to speed up slightly if available, else ignored
+          });
+
+          if (photo?.uri) {
+            // Store the last one to use for display
+            finalImageUri = photo.uri;
+
+            // Process & OCR immediately (or waiting until all 3 captured might trigger UI freeze? 
+            // Doing it sequentially here for simplicity, or parallel promises if speed needed)
+            try {
+              const processedUri = await processScoreImage(photo.uri, photo.width, photo.height);
+              finalImageUri = processedUri; // Prefer showing the processed one
+
+              const result = await TextRecognition.recognize(processedUri);
+              const rawText = result.text.match(/\d+/g)?.join('') || '';
+              if (rawText) candidates.push(rawText);
+            } catch (err) {
+              console.warn('Frame processing failed', err);
+            }
+          }
+          // Scan delay (optional, but camera might need ms to reset)
+          await new Promise(r => setTimeout(r, 100));
         }
+
+        const consensus = findConsensus(candidates);
+        console.log('Candidates:', candidates, 'Consensus:', consensus);
+
+        if (finalImageUri) {
+          router.push({
+            pathname: '/verify-score',
+            params: { imageUri: finalImageUri, ocrValue: consensus }
+          });
+        }
+
       } catch (e) {
-        console.log("Error loading default asset", e);
+        console.error(e);
+      } finally {
+        setProcessing(false);
       }
-    })();
-  }, []);
+    }
+  };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.header}>ML Kit OCR</Text>
-
-      <Button title="Pick an Image" onPress={pickImage} />
-
-      {imageUri && (
-        <Image source={{ uri: imageUri }} style={styles.image} />
-      )}
-
-      {result ? (
-        <View style={styles.resultContainer}>
-          <Text style={styles.label}>Full Text:</Text>
-          <Text style={styles.text}>{result.text}</Text>
-
-          <Text style={styles.label}>Blocks:</Text>
-          {result.blocks.map((block, index) => (
-            <View key={index} style={styles.block}>
-              <Text style={styles.blockText}>{block.text}</Text>
-            </View>
-          ))}
+    <View style={styles.container}>
+      <CameraView style={styles.camera} ref={cameraRef} facing="back" animateShutter={false}>
+        <CameraOverlay />
+        <View style={styles.buttonContainer}>
+          <TouchableOpacity style={styles.captureButton} onPress={takePicture} disabled={processing}>
+            {processing ? <ActivityIndicator color="#000" /> : <View style={styles.shutterInner} />}
+          </TouchableOpacity>
         </View>
-      ) : (
-        <Text style={{ marginTop: 20 }}>Select an image to recognize text.</Text>
-      )}
-    </ScrollView>
+      </CameraView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    padding: 20,
+    flex: 1,
+    justifyContent: 'center',
+  },
+  message: {
+    textAlign: 'center',
+    paddingBottom: 10,
+  },
+  camera: {
+    flex: 1,
+  },
+  buttonContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: 'transparent',
+    marginBottom: 40,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+  },
+  captureButton: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingTop: 60,
   },
-  header: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 20,
-  },
-  image: {
-    width: 300,
-    height: 300,
-    resizeMode: 'contain',
-    marginVertical: 20,
-    borderWidth: 1,
-    borderColor: '#ccc',
-  },
-  resultContainer: {
-    width: '100%',
-  },
-  label: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginTop: 10,
-  },
-  text: {
-    fontSize: 16,
-    marginBottom: 10,
-    padding: 10,
-    backgroundColor: '#eee',
-  },
-  block: {
-    marginBottom: 5,
-    padding: 5,
-    backgroundColor: '#f9f9f9',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  blockText: {
-    fontSize: 14,
+  shutterInner: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    borderWidth: 2,
+    borderColor: '#000',
+    backgroundColor: '#fff',
   },
 });
