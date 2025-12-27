@@ -3,11 +3,11 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
-    "start": "expo start",
+    "start": "NODE_OPTIONS=\"--require $(pwd)/scripts/polyfill.js\" expo start",
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo run:android",
-    "ios": "expo run:ios",
-    "web": "expo start --web",
+    "android": "NODE_OPTIONS=\"--require $(pwd)/scripts/polyfill.js\" expo run:android",
+    "ios": "NODE_OPTIONS=\"--require $(pwd)/scripts/polyfill.js\" expo run:ios",
+    "web": "NODE_OPTIONS=\"--require $(pwd)/scripts/polyfill.js\" expo start --web",
     "lint": "expo lint"
   },
   "dependencies": {
