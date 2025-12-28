@@ -102,8 +102,16 @@ export default function ScanScreen() {
 
   return (
     <View style={styles.container}>
-      <CameraView style={styles.camera} ref={cameraRef} facing="back" animateShutter={false}>
+      <CameraView
+        style={styles.camera}
+        ref={cameraRef}
+        facing="back"
+        animateShutter={false}
+        // @ts-ignore
+        exposureCompensation={-1}
+      >
         <CameraOverlay />
+
         <View style={styles.buttonContainer}>
           <TouchableOpacity style={styles.captureButton} onPress={takePicture} disabled={processing}>
             {processing ? <ActivityIndicator color="#000" /> : <View style={styles.shutterInner} />}

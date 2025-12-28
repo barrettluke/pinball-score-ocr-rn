@@ -10,7 +10,8 @@ export interface OPDBMachine {
 export const searchMachines = async (query: string): Promise<OPDBMachine[]> => {
     if (!query) return [];
     try {
-        const response = await fetch(`${OPDB_BASE_URL}/search?q=${encodeURIComponent(query)}`);
+        const apiKey = process.env.EXPO_PUBLIC_OPDB_API_KEY || '';
+        const response = await fetch(`${OPDB_BASE_URL}/search?q=${encodeURIComponent(query)}&api_token=${apiKey}`);
         if (!response.ok) {
             console.error('OPDB API Error:', response.status);
             return [];

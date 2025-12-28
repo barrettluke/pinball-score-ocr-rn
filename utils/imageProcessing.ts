@@ -1,4 +1,4 @@
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { Image } from 'react-native';
 
 /**
@@ -22,7 +22,7 @@ export const processScoreImage = async (uri: string, _providedWidth: number, _pr
         const targetWidth = Math.round(width * 0.8);
         const cropWidth = Math.min(targetWidth, width - originX);
 
-        const targetHeight = Math.round(height * 0.15);
+        const targetHeight = Math.round(height * 0.14);
         const cropHeight = Math.min(targetHeight, height - originY);
 
         if (cropWidth <= 0 || cropHeight <= 0) {
@@ -39,14 +39,12 @@ export const processScoreImage = async (uri: string, _providedWidth: number, _pr
 
         console.log(`Cropping ${width}x${height} image with:`, JSON.stringify(cropRegion));
 
-        const result = await manipulateAsync(
-            uri,
-            [
-                { crop: cropRegion },
-                { resize: { width: 800 } }
-            ],
-            { compress: 1, format: SaveFormat.JPEG }
-        );
+        const imageRef = await ImageManipulator.manipulate(uri)
+            .crop(cropRegion)
+            .resize({ width: 1200 })
+            .renderAsync();
+
+        const result = await imageRef.saveAsync({ compress: 1, format: SaveFormat.PNG });
         return result.uri;
     } catch (e) {
         console.error('Image Processing Error:', e);
