@@ -98,7 +98,8 @@ async function sync() {
                     if (/^\d/.test(rawCity)) {
                         // Try to split on common street suffixes
                         // Ave, St, Rd, Blvd, Ln, Dr, Ct, Pl, Way, Cir, Hwy, Pkwy
-                        const streetSplit = rawCity.match(/(?:Ave|St|Rd|Blvd|Ln|Dr|Ct|Pl|Way|Cir|Hwy|Pkwy)\.?\s+(.+)$/i);
+                        // FIX: Use \b to avoid matching "st" in "First"
+                        const streetSplit = rawCity.match(/\b(?:Ave|St|Rd|Blvd|Ln|Dr|Ct|Pl|Way|Cir|Hwy|Pkwy)\.?\s+(.+)$/i);
                         if (streetSplit) {
                             rawCity = streetSplit[1];
                         }
