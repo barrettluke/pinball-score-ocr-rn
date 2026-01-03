@@ -66,6 +66,22 @@ async function sync() {
     const combined = [...active, ...upcoming];
     console.log(`Fetched ${combined.length} tournaments.`);
 
+    // Helper: Parse address string if city/state are missing
+    function parseAddress(addr: string) {
+        if (!addr) return { city: null, state: null };
+
+        // Classic US pattern: "City, State Zip" or "City, State"
+        // Regex: (Anything), (2-Letter State) (Optional Zip)
+        const match = addr.match(/([^,]+),\s*([A-Za-z]{2})(?:\s+\d{5})?$/);
+        if (match) {
+            return {
+                city: match[1].trim(),
+                state: match[2].toUpperCase(),
+            };
+        }
+        return { city: null, state: null };
+    }
+
     // 2. Transform for Supabase
     const rows = combined.map(t => {
         const lat = t.location?.latitude;
@@ -78,6 +94,17 @@ async function sync() {
             location = `POINT(${lon} ${lat})`;
         }
 
+        // Smart Parse: If API misses city/state, try to guess from address string
+        let city = t.location?.city || null;
+        let state = t.location?.state || null;
+        const rawAddress = t.location?.address || '';
+
+        if ((!city || !state) && rawAddress) {
+            const parsed = parseAddress(rawAddress);
+            if (!city) city = parsed.city;
+            if (!state) state = parsed.state;
+        }
+
         return {
             tournament_id: t.tournamentId,
             name: t.name,
@@ -86,8 +113,8 @@ async function sync() {
             organizer_name: t.organizerName || null,
             location_name: t.location?.name || null,
             address: t.location?.address || null,
-            city: t.location?.city || null,
-            state_province: t.location?.state || null,
+            city: city,
+            state_province: state,
             country: t.location?.country || null,
             latitude: lat || null,
             longitude: lon || null,
