@@ -50,7 +50,15 @@
         }
       ],
       "expo-asset",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow this app to access your location to find nearby pinball tournaments.",
+          "locationAlwaysPermission": "Allow this app to access your location to find nearby pinball tournaments.",
+          "locationWhenInUsePermission": "Allow this app to access your location to find nearby pinball tournaments."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

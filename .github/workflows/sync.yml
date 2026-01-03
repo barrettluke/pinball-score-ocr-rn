@@ -1,0 +1,26 @@
+name: Sync Matchplay Data
+
+on:
+  schedule:
+    - cron: "0 * * * *" # Run every hour
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+
+      - name: Install Dependencies
+        run: npm install node-fetch @supabase/supabase-js ts-node typescript
+
+      - name: Run Sync Script
+        run: npx ts-node scripts/sync-matchplay.ts
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

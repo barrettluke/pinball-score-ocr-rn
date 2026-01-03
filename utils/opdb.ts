@@ -5,6 +5,7 @@ export interface OPDBMachine {
     name: string;
     manufacturer: string | null;
     manufacture_date: string | null;
+    image?: string | null;
 }
 
 export const searchMachines = async (query: string): Promise<OPDBMachine[]> => {
@@ -22,6 +23,8 @@ export const searchMachines = async (query: string): Promise<OPDBMachine[]> => {
             name: item.name,
             manufacturer: item.manufacturer?.name || null,
             manufacture_date: item.manufacture_date || null,
+            // Extract first image if available. logic: images array -> first obj -> urls -> medium
+            image: item.images?.[0]?.urls?.medium || item.images?.[0]?.urls?.large || null
         }));
     } catch (error) {
         console.error('OPDB Search Error:', error);

@@ -3,22 +3,23 @@ import * as SQLite from 'expo-sqlite';
 let db: SQLite.SQLiteDatabase | null = null;
 
 export const getDatabase = async () => {
-    if (db) {
-        return db;
-    }
-    db = await SQLite.openDatabaseAsync('pinball.db');
-    await initDatabase(db);
+  if (db) {
     return db;
+  }
+  db = await SQLite.openDatabaseAsync('pinball.db');
+  await initDatabase(db);
+  return db;
 };
 
 const initDatabase = async (database: SQLite.SQLiteDatabase) => {
-    await database.execAsync(`
+  await database.execAsync(`
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS machines (
       opdb_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       manufacturer TEXT,
-      year TEXT
+      year TEXT,
+      image_url TEXT
     );
     CREATE TABLE IF NOT EXISTS scores (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,4 +30,11 @@ const initDatabase = async (database: SQLite.SQLiteDatabase) => {
       FOREIGN KEY(machine_id) REFERENCES machines(opdb_id)
     );
   `);
+
+  // Migration for existing tables
+  try {
+    await database.execAsync('ALTER TABLE machines ADD COLUMN image_url TEXT;');
+  } catch (e) {
+    // Column likely already exists
+  }
 };

@@ -1,161 +1,407 @@
-import TextRecognition from '@react-native-ml-kit/text-recognition';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useRouter } from 'expo-router';
-import { useRef, useState } from 'react';
-import { ActivityIndicator, Button, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import CameraOverlay from '../../components/CameraOverlay';
-import { findConsensus } from '../../utils/voting';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { Image } from 'expo-image';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { Dimensions, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { LineChart } from 'react-native-chart-kit';
+import { PinballSVG } from '../../components/ui/PinballSVG';
+import { getDatabase } from '../../utils/database';
 
-import { processScoreImage } from '../../utils/imageProcessing';
+const THEME = {
+  background: '#0d1b2a',
+  card: '#1b263b',
+  accent: '#00b4d8',
+  text: '#e0e1dd',
+  textSecondary: '#778da9',
+  success: '#28a745',
+};
 
-export default function ScanScreen() {
-  const [permission, requestPermission] = useCameraPermissions();
-  const [scanned, setScanned] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const cameraRef = useRef<CameraView>(null);
+const SCREEN_WIDTH = Dimensions.get('window').width;
+
+interface Score {
+  id: number;
+  value: number;
+  machine_id: string;
+  machine_name: string;
+  date: string;
+}
+
+interface MachineBest {
+  machine_id: string; // Add this
+  machine_name: string;
+  machine_image: string | null;
+  best_score: number;
+  last_played: string;
+  trend: 'up' | 'down' | 'neutral';
+}
+
+export default function DashboardScreen() {
   const router = useRouter();
+  const [totalGames, setTotalGames] = useState(0);
+  const [allTimeBest, setAllTimeBest] = useState<{ value: number, machine: string } | null>(null);
+  const [topMachines, setTopMachines] = useState<MachineBest[]>([]);
+  const [last10Scores, setLast10Scores] = useState<number[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
-  if (!permission) {
-    return <View />;
-  }
+  // Default chart data if no scores
+  const chartData = {
+    labels: Array(10).fill(''),
+    datasets: [{ data: last10Scores.length > 0 ? last10Scores.reverse() : [0, 0, 0, 0, 0] }],
+  };
 
-  if (!permission.granted) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.message}>We need your permission to show the camera</Text>
-        <Button onPress={requestPermission} title="grant permission" />
-      </View>
-    );
-  }
+  const loadData = async () => {
+    try {
+      const db = await getDatabase();
 
-  const takePicture = async () => {
-    if (cameraRef.current && !processing) {
-      setProcessing(true);
-      try {
-        const capturedPhotos: string[] = [];
+      // 1. Total Games Played
+      const countRes: any = await db.getAllAsync('SELECT COUNT(*) as count FROM scores');
+      setTotalGames(countRes[0]?.count || 0);
 
-        // 1. BURST CAPTURE (Fast as possible)
-        // User only needs to hold still during this phase (approx 200-300ms)
-        for (let i = 0; i < 3; i++) {
-          const photo = await cameraRef.current.takePictureAsync({
-            quality: 1,
-            base64: false,
-            exif: false,
-            skipProcessing: true
-          });
-          if (photo?.uri) {
-            capturedPhotos.push(photo.uri);
-          }
-          // Tiny delay to ensure frames are slightly different (for de-noising/voting)
-          await new Promise(r => setTimeout(r, 50));
-        }
-
-        // 2. PARALLEL PROCESSING
-        // User can move phone now, we have the images.
-        if (capturedPhotos.length > 0) {
-          const processedResults = await Promise.all(capturedPhotos.map(async (uri) => {
-            try {
-              // A. Crop & Resize
-              // Note: processScoreImage now internally checks Image.getSize ensures correct orientation/dimensions
-              const processedUri = await processScoreImage(uri, 0, 0);
-
-              // B. OCR
-              const result = await TextRecognition.recognize(processedUri);
-              const rawText = result.text.match(/\d+/g)?.join('') || '';
-
-              return { uri: processedUri, text: rawText };
-            } catch (e) {
-              console.log('Frame processing error', e);
-              return null;
-            }
-          }));
-
-          // Filter valid results
-          const validResults = processedResults.filter(r => r !== null) as { uri: string, text: string }[];
-          const candidates = validResults.map(r => r.text).filter(t => t.length > 0);
-
-          // Consensus
-          const consensus = findConsensus(candidates);
-
-          // SMART SELECTION: Find the specific image that gave us the winning score.
-          // This ensures that if Frame 1 was perfect and Frame 3 was blurry, we show Frame 1.
-          const bestResult = validResults.find(r => r.text === consensus);
-          const finalImageUri = bestResult ? bestResult.uri : (validResults.length > 0 ? validResults[validResults.length - 1].uri : '');
-
-          console.log('Candidates:', candidates, 'Consensus:', consensus, 'Selected Image:', finalImageUri);
-
-          if (finalImageUri) {
-            router.push({
-              pathname: '/verify-score',
-              params: { imageUri: finalImageUri, ocrValue: consensus }
-            });
-          }
-        }
-
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setProcessing(false);
+      // 2. All-Time Best Score
+      const bestRes: any = await db.getAllAsync(`
+        SELECT s.value, m.name 
+        FROM scores s 
+        JOIN machines m ON s.machine_id = m.opdb_id 
+        ORDER BY s.value DESC 
+        LIMIT 1
+      `);
+      if (bestRes.length > 0) {
+        setAllTimeBest({ value: bestRes[0].value, machine: bestRes[0].name });
       }
+
+      // 3. Last 10 Scores (for Chart)
+      const last10Res: any[] = await db.getAllAsync('SELECT value FROM scores ORDER BY date DESC LIMIT 10');
+      setLast10Scores(last10Res.map(r => r.value));
+
+      // 4. Top Machines Summary
+      // This complex query gets the MAX score for each machine
+      const topRes: any[] = await db.getAllAsync(`
+        SELECT m.opdb_id, m.name, m.image_url, MAX(s.value) as best, MAX(s.date) as last_date
+        FROM scores s
+        JOIN machines m ON s.machine_id = m.opdb_id
+        GROUP BY m.opdb_id, m.name, m.image_url
+        ORDER BY last_date DESC
+        LIMIT 5
+      `);
+
+      setTopMachines(topRes.map(r => ({
+        machine_id: r.opdb_id,
+        machine_name: r.name,
+        machine_image: r.image_url,
+        best_score: r.best,
+        last_played: r.last_date,
+        trend: 'neutral'
+      })));
+
+    } catch (e) {
+      console.error(e);
     }
   };
 
-  return (
-    <View style={styles.container}>
-      <CameraView
-        style={styles.camera}
-        ref={cameraRef}
-        facing="back"
-        animateShutter={false}
-        // @ts-ignore
-        exposureCompensation={-1}
-      >
-        <CameraOverlay />
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  };
 
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity style={styles.captureButton} onPress={takePicture} disabled={processing}>
-            {processing ? <ActivityIndicator color="#000" /> : <View style={styles.shutterInner} />}
-          </TouchableOpacity>
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [])
+  );
+
+  return (
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{ paddingBottom: 100 }}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={THEME.accent} />}
+    >
+      {/* Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.greeting}>Welcome back,</Text>
+          <Text style={styles.username}>Wizard</Text>
         </View>
-      </CameraView>
-    </View>
+
+      </View>
+
+      {/* Stats Cards Row */}
+      <View style={styles.statsRow}>
+        <View style={styles.statCard}>
+          <View style={styles.statIconContainer}>
+            <MaterialCommunityIcons name="trophy" size={24} color="#f9c74f" />
+          </View>
+          <Text style={styles.statLabel}>ALL-TIME BEST</Text>
+          <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit>
+            {allTimeBest ? allTimeBest.value.toLocaleString() : '-'}
+          </Text>
+          <Text style={styles.statSubtext} numberOfLines={1}>
+            {allTimeBest ? allTimeBest.machine : 'No scores yet'}
+          </Text>
+        </View>
+
+        <View style={styles.statCard}>
+          <View style={[styles.statIconContainer, { backgroundColor: 'rgba(0, 180, 216, 0.2)' }]}>
+            <PinballSVG width={24} height={24} color={THEME.accent} />
+          </View>
+          <Text style={styles.statLabel}>GAMES PLAYED</Text>
+          <Text style={styles.statValue}>{totalGames}</Text>
+        </View>
+      </View>
+
+      {/* Call To Action */}
+      <TouchableOpacity style={styles.ctaButton} onPress={() => router.push('/scan')}>
+        <MaterialCommunityIcons name="plus-circle" size={24} color="#fff" />
+        <Text style={styles.ctaText}>Log New Score</Text>
+      </TouchableOpacity>
+
+      {/* Performance Trend */}
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Performance Trend</Text>
+        <TouchableOpacity><Text style={styles.linkText}>View All</Text></TouchableOpacity>
+      </View>
+      <View style={styles.chartCard}>
+        <View style={styles.chartHeader}>
+          <View>
+            <Text style={styles.chartLabel}>Avg. Score (Last 10)</Text>
+            <Text style={styles.chartValue}>
+              {last10Scores.length > 0
+                ? (last10Scores.reduce((a, b) => a + b, 0) / last10Scores.length).toLocaleString(undefined, { maximumFractionDigits: 0 })
+                : '0'}
+            </Text>
+          </View>
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>+12%</Text>
+          </View>
+        </View>
+
+        <LineChart
+          data={chartData}
+          width={SCREEN_WIDTH - 64}
+          height={100}
+          withDots={false}
+          withInnerLines={false}
+          withOuterLines={false}
+          withHorizontalLabels={false}
+          withVerticalLabels={false}
+          chartConfig={{
+            backgroundGradientFrom: THEME.card,
+            backgroundGradientTo: THEME.card,
+            color: (opacity = 1) => `rgba(0, 180, 216, ${opacity})`,
+            strokeWidth: 3,
+          }}
+          bezier
+          style={{ paddingRight: 0, paddingLeft: 0 }}
+        />
+
+        <View style={styles.chartFooter}>
+          <Text style={styles.chartFooterText}>JAN 1</Text>
+          <Text style={styles.chartFooterText}>TODAY</Text>
+        </View>
+      </View>
+
+      {/* Top Machine Records */}
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Top Machine Records</Text>
+      </View>
+
+      {topMachines.length === 0 ? (
+        <View style={[styles.listCard, { alignItems: 'center', padding: 20 }]}>
+          <Text style={{ color: THEME.textSecondary }}>No records found</Text>
+        </View>
+      ) : (
+        topMachines.map((m, index) => (
+          <TouchableOpacity key={index} style={styles.listCard} onPress={() => router.push(`/machine/${m.machine_id}`)}>
+            <View style={styles.machineIcon}>
+              {m.machine_image ? (
+                <Image source={{ uri: m.machine_image }} style={{ width: '100%', height: '100%', borderRadius: 8 }} contentFit="cover" />
+              ) : (
+                <MaterialCommunityIcons name="gamepad-circle" size={24} color={THEME.textSecondary} />
+              )}
+            </View>
+            <View style={styles.listContent}>
+              <Text style={styles.listTitle}>{m.machine_name}</Text>
+              <Text style={styles.listSubtitle}>{m.best_score.toLocaleString()}</Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={24} color={THEME.textSecondary} />
+          </TouchableOpacity>
+        ))
+      )}
+
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
+    backgroundColor: THEME.background,
+    padding: 16,
+    paddingTop: 60,
   },
-  message: {
-    textAlign: 'center',
-    paddingBottom: 10,
-  },
-  camera: {
-    flex: 1,
-  },
-  buttonContainer: {
-    flex: 1,
+  header: {
     flexDirection: 'row',
-    backgroundColor: 'transparent',
-    marginBottom: 40,
-    justifyContent: 'center',
-    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
   },
-  captureButton: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: '#fff',
+  greeting: {
+    color: THEME.textSecondary,
+    fontSize: 14,
+  },
+  username: {
+    color: THEME.text,
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 24,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: THEME.card,
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.05)',
+  },
+  statIconContainer: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(249, 199, 79, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
+    marginBottom: 12,
   },
-  shutterInner: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    borderWidth: 2,
-    borderColor: '#000',
-    backgroundColor: '#fff',
+  statLabel: {
+    color: THEME.textSecondary,
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  statValue: {
+    color: THEME.text,
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 2,
+  },
+  statSubtext: {
+    color: THEME.textSecondary,
+    fontSize: 12,
+  },
+  ctaButton: {
+    backgroundColor: THEME.accent,
+    borderRadius: 12,
+    height: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 32,
+    shadowColor: THEME.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  ctaText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  sectionTitle: {
+    color: THEME.text,
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  linkText: {
+    color: THEME.accent,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  chartCard: {
+    backgroundColor: THEME.card,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 32,
+    overflow: 'hidden',
+  },
+  chartHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 24,
+  },
+  chartLabel: {
+    color: THEME.textSecondary,
+    fontSize: 14,
+    marginBottom: 4,
+  },
+  chartValue: {
+    color: THEME.text,
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
+  badge: {
+    backgroundColor: 'rgba(40, 167, 69, 0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  badgeText: {
+    color: THEME.success,
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  chartFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  chartFooterText: {
+    color: THEME.textSecondary,
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  listCard: {
+    backgroundColor: THEME.card,
+    borderRadius: 12,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  machineIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  listContent: {
+    flex: 1,
+  },
+  listTitle: {
+    color: THEME.text,
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 2,
+  },
+  listSubtitle: {
+    color: THEME.accent,
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

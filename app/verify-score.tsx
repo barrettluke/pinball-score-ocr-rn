@@ -42,7 +42,8 @@ export default function VerifyScoreScreen() {
             opdb_id: machine.opdb_id,
             name: machine.name,
             manufacturer: machine.manufacturer,
-            year: machine.manufacture_date
+            year: machine.manufacture_date,
+            image_url: machine.image
         };
 
         // Check if already in list to avoid dupes
@@ -73,11 +74,12 @@ export default function VerifyScoreScreen() {
             const machineToSave = machines.find(m => m.opdb_id === selectedMachine);
             if (machineToSave) {
                 await db.runAsync(
-                    'INSERT OR IGNORE INTO machines (opdb_id, name, manufacturer, year) VALUES (?, ?, ?, ?)',
+                    'INSERT OR IGNORE INTO machines (opdb_id, name, manufacturer, year, image_url) VALUES (?, ?, ?, ?, ?)',
                     machineToSave.opdb_id,
                     machineToSave.name,
                     machineToSave.manufacturer,
-                    machineToSave.year
+                    machineToSave.year,
+                    machineToSave.image_url
                 );
             }
 
@@ -90,7 +92,7 @@ export default function VerifyScoreScreen() {
                 new Date().toISOString()
             );
             Alert.alert('Success', 'Score saved!', [
-                { text: 'OK', onPress: () => router.navigate('/(tabs)/dashboard') }
+                { text: 'OK', onPress: () => router.navigate('/(tabs)') }
             ]);
         } catch (error) {
             console.error(error);

@@ -22,11 +22,12 @@ export default function SearchScreen() {
         try {
             const db = await getDatabase();
             await db.runAsync(
-                'INSERT OR REPLACE INTO machines (opdb_id, name, manufacturer, year) VALUES (?, ?, ?, ?)',
+                'INSERT OR REPLACE INTO machines (opdb_id, name, manufacturer, year, image_url) VALUES (?, ?, ?, ?, ?)',
                 machine.opdb_id,
                 machine.name,
                 machine.manufacturer,
-                machine.manufacture_date
+                machine.manufacture_date,
+                machine.image || null
             );
             Alert.alert('Success', `Saved ${machine.name} to your list!`);
         } catch (error) {
@@ -41,6 +42,7 @@ export default function SearchScreen() {
                 <TextInput
                     style={styles.input}
                     placeholder="Search for a machine..."
+                    placeholderTextColor="#778da9"
                     value={query}
                     onChangeText={setQuery}
                     onSubmitEditing={handleSearch}
@@ -67,53 +69,76 @@ export default function SearchScreen() {
     );
 }
 
+const THEME = {
+    background: '#0d1b2a',
+    card: '#1b263b',
+    accent: '#00b4d8',
+    text: '#e0e1dd',
+    textSecondary: '#778da9',
+    success: '#28a745',
+};
+
 const styles = StyleSheet.create({
     container: {
         flex: 1,
         padding: 16,
-        backgroundColor: '#fff',
+        backgroundColor: THEME.background,
+        paddingTop: 60,
     },
     searchBar: {
         flexDirection: 'row',
-        marginBottom: 16,
-        gap: 10,
+        marginBottom: 24,
+        gap: 12,
     },
     input: {
         flex: 1,
         height: 50,
+        backgroundColor: THEME.card,
         borderWidth: 1,
-        borderColor: '#ddd',
-        borderRadius: 8,
-        paddingHorizontal: 12,
+        borderColor: 'rgba(255,255,255,0.1)',
+        borderRadius: 12,
+        paddingHorizontal: 16,
         fontSize: 16,
+        color: THEME.text,
     },
     button: {
-        backgroundColor: '#007AFF',
+        backgroundColor: THEME.accent,
         justifyContent: 'center',
         paddingHorizontal: 20,
-        borderRadius: 8,
+        borderRadius: 12,
+        shadowColor: THEME.accent,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+        elevation: 3,
     },
     buttonText: {
         color: '#fff',
         fontWeight: 'bold',
+        fontSize: 16,
     },
     item: {
         padding: 16,
-        borderBottomWidth: 1,
-        borderBottomColor: '#eee',
+        backgroundColor: THEME.card,
+        marginBottom: 10,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
     },
     title: {
         fontSize: 18,
-        fontWeight: '600',
+        fontWeight: 'bold',
+        color: THEME.text,
     },
     subtitle: {
         fontSize: 14,
-        color: '#666',
+        color: THEME.textSecondary,
         marginTop: 4,
     },
     empty: {
         textAlign: 'center',
-        color: '#999',
-        marginTop: 20,
+        color: THEME.textSecondary,
+        marginTop: 40,
+        fontSize: 16,
     },
 });
