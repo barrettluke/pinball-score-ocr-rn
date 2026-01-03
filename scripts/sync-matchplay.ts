@@ -1,6 +1,6 @@
 require('dotenv').config({ path: '.env.local' });
 const { createClient } = require('@supabase/supabase-js');
-const fetch = require('node-fetch');
+// const fetch = require('node-fetch'); // Native fetch is used in Node 18+
 
 // CONFIG
 const MATCHPLAY_API_BASE = 'https://app.matchplay.events/api';
