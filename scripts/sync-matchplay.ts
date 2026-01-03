@@ -91,7 +91,20 @@ async function sync() {
             if (stateZipMatch) {
                 state = stateZipMatch[1].toUpperCase();
                 // If we found state at index i, City is likely i-1
-                if (i > 0) city = parts[i - 1];
+                if (i > 0) {
+                    let rawCity = parts[i - 1];
+                    // FIX: If "City" starts with digits, it likely contains Street address too
+                    // e.g. "1100 First State Blvd. Wilmington"
+                    if (/^\d/.test(rawCity)) {
+                        // Try to split on common street suffixes
+                        // Ave, St, Rd, Blvd, Ln, Dr, Ct, Pl, Way, Cir, Hwy, Pkwy
+                        const streetSplit = rawCity.match(/(?:Ave|St|Rd|Blvd|Ln|Dr|Ct|Pl|Way|Cir|Hwy|Pkwy)\.?\s+(.+)$/i);
+                        if (streetSplit) {
+                            rawCity = streetSplit[1];
+                        }
+                    }
+                    city = rawCity.trim();
+                }
                 break;
             }
 
