@@ -70,16 +70,57 @@ async function sync() {
     function parseAddress(addr: string) {
         if (!addr) return { city: null, state: null };
 
-        // Classic US pattern: "City, State Zip" or "City, State"
-        // Regex: (Anything), (2-Letter State) (Optional Zip)
-        const match = addr.match(/([^,]+),\s*([A-Za-z]{2})(?:\s+\d{5})?$/);
-        if (match) {
-            return {
-                city: match[1].trim(),
-                state: match[2].toUpperCase(),
-            };
+        // 1. Split by comma to handle structural parts
+        // e.g. "117 J St, Sacramento, CA 95814, US" -> ["117 J St", "Sacramento", "CA 95814", "US"]
+        const parts = addr.split(',').map(p => p.trim()).filter(p => p.length > 0);
+
+        if (parts.length < 2) return { city: null, state: null };
+
+        let state = null;
+        let city = null;
+
+        // Iterate backwards to look for State/Zip patterns
+        // We skip the last part if it looks like a Country (2 chars, e.g. US, AU)
+        // unless it's the ONLY candidate.
+
+        for (let i = parts.length - 1; i >= 0; i--) {
+            const part = parts[i];
+
+            // Check for "State Zip" pattern (e.g. "CA 95814")
+            const stateZipMatch = part.match(/^([A-Za-z]{2})\s+\d+/);
+            if (stateZipMatch) {
+                state = stateZipMatch[1].toUpperCase();
+                // If we found state at index i, City is likely i-1
+                if (i > 0) city = parts[i - 1];
+                break;
+            }
+
+            // Check for isolated State code (e.g. "SA")
+            // Avoid "US" or "AU" if it's the very last part (likely Country)
+            const isIso = /^[A-Za-z]{2,3}$/.test(part);
+            if (isIso) {
+                // Heuristic: If it's the last part, might be country. 
+                // But if we haven't found anything else, track it.
+                // If it's NOT the last part, it's definitely a candidate for State.
+                const isLast = (i === parts.length - 1);
+
+                if (!isLast) {
+                    state = part.toUpperCase();
+                    if (i > 0) city = parts[i - 1];
+                    break;
+                }
+            }
         }
-        return { city: null, state: null };
+
+        // Fallback: If we didn't find a strong "CA 12345" pattern,
+        // and we have at least 3 parts (Street, City, Country?), try simple positions.
+        if (!state && !city && parts.length >= 2) {
+            // "City, State/Country"
+            // Let's assume the second to last is State or City? 
+            // This is risky. Let's rely on the loop above for now.
+        }
+
+        return { city, state };
     }
 
     // 2. Transform for Supabase
