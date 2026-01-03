@@ -66,18 +66,19 @@ async function sync() {
     const combined = [...active, ...upcoming];
     console.log(`Fetched ${combined.length} tournaments.`);
 
-    // Helper: Parse address string if city/state are missing
+    // Helper: Parse address string if city/state/country are missing
     function parseAddress(addr: string) {
-        if (!addr) return { city: null, state: null };
+        if (!addr) return { city: null, state: null, country: null };
 
         // 1. Split by comma to handle structural parts
         // e.g. "117 J St, Sacramento, CA 95814, US" -> ["117 J St", "Sacramento", "CA 95814", "US"]
         const parts = addr.split(',').map(p => p.trim()).filter(p => p.length > 0);
 
-        if (parts.length < 2) return { city: null, state: null };
+        if (parts.length < 2) return { city: null, state: null, country: null };
 
         let state = null;
         let city = null;
+        let country = null;
 
         // Iterate backwards to look for State/Zip patterns
         // We skip the last part if it looks like a Country (2 chars, e.g. US, AU)
@@ -85,6 +86,19 @@ async function sync() {
 
         for (let i = parts.length - 1; i >= 0; i--) {
             const part = parts[i];
+
+            // EXTRACT COUNTRY
+            // Check for isolated "US", "AU", "UK", "CA" (Country Code) or full name "United States"
+            // Assuming country is always at the very end (index parts.length - 1)
+            if (i === parts.length - 1) {
+                if (/^(US|USA|United States|AU|Australia|CA|Canada|UK|United Kingdom)$/i.test(part)) {
+                    country = part;
+                    // Normalize common codes
+                    if (country.toUpperCase() === 'USA') country = 'US';
+                    if (/united states/i.test(country)) country = 'US';
+                    continue; // It was a country, move to next part leftwards
+                }
+            }
 
             // Check for "State Zip" pattern (e.g. "CA 95814")
             const stateZipMatch = part.match(/^([A-Za-z]{2})\s+\d+/);
@@ -113,9 +127,9 @@ async function sync() {
             // Avoid "US" or "AU" if it's the very last part (likely Country)
             const isIso = /^[A-Za-z]{2,3}$/.test(part);
             if (isIso) {
-                // Heuristic: If it's the last part, might be country. 
-                // But if we haven't found anything else, track it.
-                // If it's NOT the last part, it's definitely a candidate for State.
+                // If it's the last part, we already checked for Country above.
+                // If we are here, and it matches 2-3 chars, it MIGHT be a state (e.g. "SA" in Australia)
+                // UNLESS we already identified a country.
                 const isLast = (i === parts.length - 1);
 
                 if (!isLast) {
@@ -126,15 +140,7 @@ async function sync() {
             }
         }
 
-        // Fallback: If we didn't find a strong "CA 12345" pattern,
-        // and we have at least 3 parts (Street, City, Country?), try simple positions.
-        if (!state && !city && parts.length >= 2) {
-            // "City, State/Country"
-            // Let's assume the second to last is State or City? 
-            // This is risky. Let's rely on the loop above for now.
-        }
-
-        return { city, state };
+        return { city, state, country };
     }
 
     // 2. Transform for Supabase
@@ -142,7 +148,7 @@ async function sync() {
         const lat = t.location?.latitude;
         const lon = t.location?.longitude;
 
-        // Only valid if we have coordinates
+        // Disable WKT location logic if lat/lon missing
         let location = null;
         if (lat && lon) {
             // WKT format for PostGIS: "POINT(lon lat)"
@@ -152,25 +158,41 @@ async function sync() {
         // Smart Parse: If API misses city/state, try to guess from address string
         let city = t.location?.city || null;
         let state = t.location?.state || null;
+        let country = t.location?.country || null;
         const rawAddress = t.location?.address || '';
 
-        if ((!city || !state) && rawAddress) {
+        if (rawAddress && (!city || !state || !country)) {
             const parsed = parseAddress(rawAddress);
             if (!city) city = parsed.city;
             if (!state) state = parsed.state;
+            if (!country) country = parsed.country;
+        }
+
+        // SPLIT TIME
+        // t.startLocal is "2026-07-30 18:00:00"
+        let startDate = t.startLocal;
+        let startTime = null;
+
+        if (t.startLocal && t.startLocal.includes(' ')) {
+            const parts = t.startLocal.split(' ');
+            if (parts.length === 2) {
+                startDate = parts[0]; // "2026-07-30"
+                startTime = parts[1]; // "18:00:00"
+            }
         }
 
         return {
             tournament_id: t.tournamentId,
             name: t.name,
             status: t.status,
-            start_local_date: t.startLocal,
+            start_local_date: startDate,
+            start_local_time: startTime,
             organizer_name: t.organizerName || null,
             location_name: t.location?.name || null,
             address: t.location?.address || null,
             city: city,
             state_province: state,
-            country: t.location?.country || null,
+            country: country,
             latitude: lat || null,
             longitude: lon || null,
             description: t.description || null,
