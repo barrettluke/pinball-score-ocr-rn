@@ -158,7 +158,6 @@ export default function DashboardScreen() {
       {/* Performance Trend */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Performance Trend</Text>
-        <TouchableOpacity><Text style={styles.linkText}>View All</Text></TouchableOpacity>
       </View>
       <View style={styles.chartCard}>
         <View style={styles.chartHeader}>

@@ -58,6 +58,12 @@
           "locationAlwaysPermission": "Allow this app to access your location to find nearby pinball tournaments.",
           "locationWhenInUsePermission": "Allow this app to access your location to find nearby pinball tournaments."
         }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "The app needs to access your calendar to add tournament events."
+        }
       ]
     ],
     "experiments": {

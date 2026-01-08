@@ -31,40 +31,148 @@ interface MatchplayTournament {
         longitude?: number;
     };
     description?: string;
-    tournamentAvatar?: string;
 }
 
-async function fetchTournaments(status: 'upcoming' | 'active', pagesToScan = 5): Promise<MatchplayTournament[]> {
-    let all: MatchplayTournament[] = [];
+// Helper to fetch from Matchplay with pagination
+async function fetchTournaments(status: 'upcoming' | 'active' | 'planned' | 'completed', limitPages = 100): Promise<MatchplayTournament[]> {
+    let allTournaments: MatchplayTournament[] = [];
 
-    for (let page = 1; page <= pagesToScan; page++) {
+    for (let page = 1; page <= limitPages; page++) {
         try {
             console.log(`Fetching ${status} page ${page}...`);
             const res = await fetch(`${MATCHPLAY_API_BASE}/tournaments?status=${status}&page=${page}`);
             if (!res.ok) continue;
 
             const json = await res.json();
-            const list = Array.isArray(json) ? json : (json.data || []);
 
-            if (list.length === 0) break;
-            all = [...all, ...list];
+            if (json.data && Array.isArray(json.data)) {
+                allTournaments.push(...json.data);
+                console.log(`  + ${json.data.length} tournaments`);
+
+                if (json.data.length < 50 || !json.links?.next) {
+                    break;
+                }
+            } else {
+                break;
+            }
         } catch (e) {
-            console.error(`Error fetching page ${page}`, e);
+            console.warn(`Error fetching page ${page}:`, e);
+            break;
         }
+
+        // Rate limit
+        await new Promise(resolve => setTimeout(resolve, 100));
     }
-    return all;
+
+    return allTournaments;
+}
+
+// Helper: Sleep for rate limiting
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Check geocode cache for existing coordinates
+async function getCachedGeocode(address: string): Promise<{ lat: number; lon: number } | null> {
+    try {
+        const { data, error } = await supabase
+            .from('geocode_cache')
+            .select('latitude, longitude')
+            .eq('address', address)
+            .single();
+
+        if (error || !data) return null;
+        return { lat: data.latitude, lon: data.longitude };
+    } catch {
+        return null;
+    }
+}
+
+// Save geocode result to cache
+async function saveGeocode(address: string, lat: number, lon: number): Promise<void> {
+    try {
+        await supabase.from('geocode_cache').upsert({
+            address,
+            latitude: lat,
+            longitude: lon,
+            created_at: new Date().toISOString()
+        }, { onConflict: 'address' });
+    } catch (e) {
+        console.warn('Failed to cache geocode:', e);
+    }
+}
+
+// Geocode an address (checks cache first, then calls Nominatim)
+async function geocodeAddress(address: string): Promise<{ lat: number; lon: number; fromCache: boolean } | null> {
+    if (!address || address.trim().length === 0) return null;
+
+    // 1. Check cache first
+    const cached = await getCachedGeocode(address);
+    if (cached) {
+        console.log(`  [CACHE HIT] ${address.substring(0, 40)}...`);
+        return { ...cached, fromCache: true };
+    }
+
+    // 2. Call Nominatim (with rate limiting)
+    try {
+        const encoded = encodeURIComponent(address);
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encoded}&limit=1`;
+
+        const res = await fetch(url, {
+            headers: {
+                'User-Agent': 'PinballScoreOCR/1.0 (github.com/barrettluke/pinball-score-ocr-rn)'
+            }
+        });
+
+        if (!res.ok) {
+            console.warn(`Geocode failed for "${address}": HTTP ${res.status}`);
+            return null;
+        }
+
+        const data = await res.json();
+
+        if (data && data.length > 0 && data[0].lat && data[0].lon) {
+            const result = {
+                lat: parseFloat(data[0].lat),
+                lon: parseFloat(data[0].lon)
+            };
+
+            // Save to cache for future use
+            await saveGeocode(address, result.lat, result.lon);
+            console.log(`  [GEOCODED] ${address.substring(0, 40)}... -> ${result.lat.toFixed(4)}, ${result.lon.toFixed(4)}`);
+
+            return { ...result, fromCache: false };
+        }
+
+        return null;
+    } catch (e) {
+        console.warn(`Geocode error for "${address}":`, e);
+        return null;
+    }
 }
 
 async function sync() {
     console.log('Starting Sync...');
 
     // 1. Fetch from Matchplay
-    // Scan deeper (10 pages) for Upcoming, 5 for Active
-    const upcoming = await fetchTournaments('upcoming', 10);
+    // Scan much deeper (100 pages each = 2500 events) for Upcoming/Planned to catch distant events
+    // This is safe because geocoding is rate-limited separately (max 200 per run)
+    const upcoming = await fetchTournaments('upcoming', 100);
+    const planned = await fetchTournaments('planned', 100);
     const active = await fetchTournaments('active', 5);
+    const completed = await fetchTournaments('completed', 15); // Fetch recent history to ensure status updates
 
-    const combined = [...active, ...upcoming];
-    console.log(`Fetched ${combined.length} tournaments.`);
+    // Deduplicate by tournamentId to prevent "ON CONFLICT" errors
+    const uniqueMap = new Map();
+    [...active, ...upcoming, ...planned, ...completed].forEach(t => uniqueMap.set(t.tournamentId, t));
+    const combined = Array.from(uniqueMap.values());
+
+    console.log(`Fetched ${combined.length} unique tournaments.`);
+
+    // Sort by date (ascending) to prioritize geocoding near-future events
+    combined.sort((a, b) => {
+        const dateA = a.startLocal || '9999-99-99';
+        const dateB = b.startLocal || '9999-99-99';
+        return dateA.localeCompare(dateB);
+    });
 
     // Helper: Parse address string if city/state/country are missing
     function parseAddress(addr: string) {
@@ -143,15 +251,37 @@ async function sync() {
         return { city, state, country };
     }
 
-    // 2. Transform for Supabase
-    const rows = combined.map(t => {
-        const lat = t.location?.latitude;
-        const lon = t.location?.longitude;
+    // 2. Transform for Supabase with geocoding
+    const rows = [];
+    let geocodeCount = 0;
+    const MAX_GEOCODES = 500; // Increased to 500 to catch up faster (~8 mins run)
 
-        // Disable WKT location logic if lat/lon missing
+    for (const t of combined) {
+        let lat = t.location?.latitude || null;
+        let lon = t.location?.longitude || null;
+        const rawAddress = t.location?.address || '';
+
+        // Geocode if lat/lon missing and we have an address
+        if (!lat && !lon && rawAddress && geocodeCount < MAX_GEOCODES) {
+            console.log(`Geocoding: "${rawAddress.substring(0, 50)}..."`);
+            const result = await geocodeAddress(rawAddress);
+            if (result) {
+                lat = result.lat;
+                lon = result.lon;
+                console.log(`  -> Found: ${lat}, ${lon}`);
+
+                // Only count against quota if NOT from cache
+                if (!result.fromCache) {
+                    geocodeCount++;
+                    // Rate limit: wait 1 second between API requests
+                    await sleep(1100);
+                }
+            }
+        }
+
+        // WKT location format for PostGIS
         let location = null;
         if (lat && lon) {
-            // WKT format for PostGIS: "POINT(lon lat)"
             location = `POINT(${lon} ${lat})`;
         }
 
@@ -159,7 +289,6 @@ async function sync() {
         let city = t.location?.city || null;
         let state = t.location?.state || null;
         let country = t.location?.country || null;
-        const rawAddress = t.location?.address || '';
 
         if (rawAddress && (!city || !state || !country)) {
             const parsed = parseAddress(rawAddress);
@@ -181,7 +310,7 @@ async function sync() {
             }
         }
 
-        return {
+        rows.push({
             tournament_id: t.tournamentId,
             name: t.name,
             status: t.status,
@@ -193,14 +322,16 @@ async function sync() {
             city: city,
             state_province: state,
             country: country,
-            latitude: lat || null,
-            longitude: lon || null,
+            latitude: lat,
+            longitude: lon,
             description: t.description || null,
             image_url: t.tournamentAvatar || null,
             location: location, // The Geography column
             updated_at: new Date().toISOString()
-        };
-    });
+        });
+    }
+
+    console.log(`Geocoded ${geocodeCount} addresses.`);
 
     // 3. Upsert into Supabase
     // We process in chunks of 100 to avoid request limits

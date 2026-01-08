@@ -109,15 +109,15 @@ export default function ScanScreen() {
         animateShutter={false}
         // @ts-ignore
         exposureCompensation={-1}
-      >
-        <CameraOverlay />
+      />
 
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity style={styles.captureButton} onPress={takePicture} disabled={processing}>
-            {processing ? <ActivityIndicator color="#000" /> : <View style={styles.shutterInner} />}
-          </TouchableOpacity>
-        </View>
-      </CameraView>
+      <CameraOverlay />
+
+      <View style={styles.buttonContainer}>
+        <TouchableOpacity style={styles.captureButton} onPress={takePicture} disabled={processing}>
+          {processing ? <ActivityIndicator color="#000" /> : <View style={styles.shutterInner} />}
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -135,12 +135,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   buttonContainer: {
-    flex: 1,
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
     backgroundColor: 'transparent',
     marginBottom: 40,
     justifyContent: 'center',
-    alignItems: 'flex-end',
+    alignItems: 'center',
   },
   captureButton: {
     width: 70,

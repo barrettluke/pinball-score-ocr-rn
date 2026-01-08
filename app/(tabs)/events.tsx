@@ -1,10 +1,13 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { FlashList } from '@shopify/flash-list';
+import * as Calendar from 'expo-calendar';
 import { Image } from 'expo-image';
 import * as Location from 'expo-location';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Dimensions, FlatList, Pressable, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, Linking, Platform, Pressable, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withRepeat, withSpring, withTiming } from 'react-native-reanimated';
-import { findNearbyTournaments, getTournaments, getUserDashboard, MatchplayTournament } from '../../utils/matchplay';
+import { formatTime12h } from '../../utils/formatters';
+import { getNearbyTournaments, getSupabaseTournaments, getUserDashboard, getValidStatuses, MatchplayTournament, searchTournaments } from '../../utils/matchplay';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const DRAWER_WIDTH = SCREEN_WIDTH * 0.85;
@@ -61,12 +64,18 @@ const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => 
     return R * c;
 };
 
-// Memoized Event Card component for FlatList performance
-const EventCard = React.memo(({ item }: { item: MatchplayTournament }) => {
-    // Pre-compute all display values
-    const badgeColor = item.status === 'active' ? THEME.live : item.status === 'upcoming' ? THEME.upcoming : THEME.textSecondary;
 
-    // Compute location string once
+
+// Expandable Event Card component
+const EventCard = React.memo(({ item, isExpanded, onPress }: {
+    item: MatchplayTournament;
+    isExpanded: boolean;
+    onPress: () => void;
+}) => {
+    const badgeColor = item.status === 'active' ? THEME.live :
+        item.status === 'upcoming' ? THEME.upcoming : THEME.textSecondary;
+
+    // Compute location string
     const locationDisplay = React.useMemo(() => {
         let city = (item.city || '').replace(/\d+/g, '').replace(/,?\s*(US|USA|UK)$/i, '').trim();
         let state = (item.stateProvince || '').replace(/\d+/g, '').trim();
@@ -79,58 +88,185 @@ const EventCard = React.memo(({ item }: { item: MatchplayTournament }) => {
 
         let location = venue && cityState ? `${venue} • ${cityState}` : (cityState || venue || 'Location TBA');
         if (country) location += `, ${country}`;
-        if (item.distance) location += ` • ${item.distance.toFixed(1)} mi`;
 
         return location;
-    }, [item.city, item.stateProvince, item.locationName, item.country, item.distance]);
+    }, [item.city, item.stateProvince, item.locationName, item.country]);
 
-    // Compute date string once
+    // Compute date string
     const dateDisplay = React.useMemo(() => {
         const dateStr = item.startLocalDate && !isNaN(new Date(item.startLocalDate).getTime())
             ? new Date(item.startLocalDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
             : (item.startLocalDate || 'Date TBA');
-        return item.startLocalTime ? `${dateStr} • ${item.startLocalTime}` : dateStr;
+        const timeStr = formatTime12h(item.startLocalTime);
+        return timeStr ? `${dateStr} • ${timeStr}` : dateStr;
     }, [item.startLocalDate, item.startLocalTime]);
 
+    // Full date for expanded view
+    const fullDateDisplay = React.useMemo(() => {
+        if (!item.startLocalDate || isNaN(new Date(item.startLocalDate).getTime())) return 'Date TBA';
+        return new Date(item.startLocalDate).toLocaleDateString(undefined, {
+            weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+        });
+    }, [item.startLocalDate]);
+
+    const openMatchplay = () => {
+        const url = `https://app.matchplay.events/tournaments/${item.tournamentId}`;
+        Linking.openURL(url);
+    };
+
+    const addToCalendar = async () => {
+        try {
+            const { status } = await Calendar.requestCalendarPermissionsAsync();
+            if (status !== 'granted') {
+                Alert.alert('Permission required', 'Calendar access is needed to add this event.');
+                return;
+            }
+
+            // Get default calendar
+            let calendarId: string | null = null;
+            if (Platform.OS === 'ios') {
+                const defaultCalendar = await Calendar.getDefaultCalendarAsync();
+                calendarId = defaultCalendar.id;
+            } else {
+                const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+                const primary = calendars.find(c => c.isPrimary);
+                calendarId = primary ? primary.id : calendars[0]?.id;
+            }
+
+            if (!calendarId) {
+                Alert.alert('Error', 'No calendar found on device.');
+                return;
+            }
+
+            // Construct Date
+            // startLocalDate comes as YYYY-MM-DD
+            // startLocalTime comes as HH:mm:ss or similar
+            let startDate = new Date(item.startLocalDate);
+            if (item.startLocalTime) {
+                // Combine date and time
+                const [h, m] = item.startLocalTime.split(':');
+                startDate.setHours(parseInt(h), parseInt(m));
+            } else {
+                startDate.setHours(9, 0); // Default 9 AM
+            }
+
+            // End date (default 4 hours duration)
+            const endDate = new Date(startDate.getTime() + 4 * 60 * 60 * 1000);
+
+            await Calendar.createEventAsync(calendarId, {
+                title: item.name,
+                startDate,
+                endDate,
+                timeZone: 'UTC', // Required for Android to avoid offset issues sometimes
+                location: item.locationName ? `${item.locationName}, ${item.address || ''}` : item.address,
+                notes: `View on Matchplay: https://app.matchplay.events/tournaments/${item.tournamentId}\n\n${item.description || ''}`
+            });
+
+            Alert.alert('Success', 'Event added to your calendar!');
+
+        } catch (e) {
+            console.error('Calendar error:', e);
+            Alert.alert('Error', 'Could not add event to calendar.');
+        }
+    };
+
     return (
-        <View style={styles.card}>
-            {item.imageUrl ? (
-                <Image
-                    source={{ uri: item.imageUrl }}
-                    style={styles.cardImage}
-                    contentFit="cover"
-                    transition={200}
-                    cachePolicy="memory-disk"
-                />
-            ) : (
-                <View style={[styles.cardImage, { justifyContent: 'center', alignItems: 'center' }]}>
-                    <MaterialCommunityIcons name="trophy-outline" size={32} color={THEME.textSecondary} />
-                </View>
-            )}
-            <View style={styles.cardContent}>
-                <View style={styles.cardHeader}>
-                    <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
-                    <View style={[styles.badge, { borderColor: badgeColor, backgroundColor: item.status === 'active' ? badgeColor : 'transparent' }]}>
-                        <Text style={[styles.badgeText, { color: item.status === 'active' ? '#fff' : badgeColor }]}>{item.status.toUpperCase()}</Text>
-                    </View>
-                </View>
-                <View style={styles.cardRow}>
-                    <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
-                            <MaterialCommunityIcons name="map-marker" size={12} color={THEME.textSecondary} style={{ marginRight: 4 }} />
-                            <Text style={styles.cardDetails} numberOfLines={1}>{locationDisplay}</Text>
+        <Pressable onPress={onPress}>
+            <View style={[styles.card, isExpanded && styles.cardExpanded]}>
+                {/* Collapsed View - Always Visible */}
+                <View style={styles.cardCollapsed}>
+                    {item.imageUrl ? (
+                        <Image
+                            source={{ uri: item.imageUrl }}
+                            style={styles.cardImage}
+                            contentFit="cover"
+                            transition={200}
+                            cachePolicy="memory-disk"
+                        />
+                    ) : (
+                        <View style={[styles.cardImage, { justifyContent: 'center', alignItems: 'center' }]}>
+                            <MaterialCommunityIcons name="trophy-outline" size={32} color={THEME.textSecondary} />
                         </View>
-                        <Text style={styles.cardDetails}>{dateDisplay}</Text>
+                    )}
+                    <View style={styles.cardContent}>
+                        <View style={styles.cardHeader}>
+                            <Text style={styles.cardTitle} numberOfLines={isExpanded ? 2 : 1}>{item.name}</Text>
+                            <View style={[styles.badge, { borderColor: badgeColor, backgroundColor: item.status === 'active' ? badgeColor : 'transparent' }]}>
+                                <Text style={[styles.badgeText, { color: item.status === 'active' ? '#fff' : badgeColor }]}>{item.status.toUpperCase()}</Text>
+                            </View>
+                        </View>
+                        <View style={styles.cardRow}>
+                            <View style={{ flex: 1 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
+                                    <MaterialCommunityIcons name="map-marker" size={12} color={THEME.textSecondary} style={{ marginRight: 4 }} />
+                                    <Text style={styles.cardDetails} numberOfLines={1}>{locationDisplay}</Text>
+                                </View>
+                                <Text style={styles.cardDetails}>{dateDisplay}</Text>
+                            </View>
+                            <MaterialCommunityIcons
+                                name={isExpanded ? "chevron-up" : "chevron-down"}
+                                size={20}
+                                color={THEME.textSecondary}
+                            />
+                        </View>
                     </View>
                 </View>
+
+                {/* Expanded Details */}
+                {isExpanded && (
+                    <View style={styles.cardExpandedContent}>
+                        <View style={styles.expandedDivider} />
+
+                        {/* Full Date/Time */}
+                        <View style={styles.expandedRow}>
+                            <MaterialCommunityIcons name="calendar" size={16} color={THEME.accent} />
+                            <Text style={styles.expandedLabel}>{fullDateDisplay}</Text>
+                        </View>
+                        {item.startLocalTime && (
+                            <View style={styles.expandedRow}>
+                                <MaterialCommunityIcons name="clock-outline" size={16} color={THEME.accent} />
+                                <Text style={styles.expandedLabel}>{formatTime12h(item.startLocalTime)}</Text>
+                            </View>
+                        )}
+
+                        {/* Full Address */}
+                        {item.address && (
+                            <View style={styles.expandedRow}>
+                                <MaterialCommunityIcons name="directions" size={16} color={THEME.accent} />
+                                <Text style={styles.expandedLabel}>{item.address}</Text>
+                            </View>
+                        )}
+
+                        {/* Description */}
+                        {item.description && (
+                            <Text style={styles.expandedDescription} numberOfLines={4}>
+                                {item.description}
+                            </Text>
+                        )}
+
+                        {/* Actions */}
+                        <View style={styles.expandedActions}>
+                            <TouchableOpacity style={styles.actionButton} onPress={addToCalendar}>
+                                <MaterialCommunityIcons name="calendar-plus" size={18} color={THEME.accent} />
+                                <Text style={styles.actionText}>Add to Calendar</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity style={styles.actionButton} onPress={openMatchplay}>
+                                <MaterialCommunityIcons name="open-in-new" size={18} color={THEME.accent} />
+                                <Text style={styles.actionText}>Matchplay</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                )}
             </View>
-        </View>
+        </Pressable>
     );
 });
 
 export default function EventsScreen() {
     const [activeTab, setActiveTab] = useState<'All' | 'Live' | 'Upcoming' | 'Completed' | 'My Tournaments'>('All');
     const [isNearbyOnly, setIsNearbyOnly] = useState(false);
+    const [nearbySort, setNearbySort] = useState<'distance' | 'date'>('date');
     const [search, setSearch] = useState('');
     const [events, setEvents] = useState<MatchplayTournament[]>([]);
     const [refreshing, setRefreshing] = useState(false);
@@ -139,6 +275,8 @@ export default function EventsScreen() {
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
     const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+    const [expandedId, setExpandedId] = useState<number | null>(null);
+    const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
 
     // Animation Values
     const drawerTranslateX = useSharedValue(DRAWER_WIDTH);
@@ -166,124 +304,232 @@ export default function EventsScreen() {
         opacity: backdropOpacity.value,
     }));
 
-    const loadEvents = useCallback(async (pageNum: number = 1, append: boolean = false) => {
-        if (pageNum === 1 && !refreshing) setLoading(true);
-        if (pageNum > 1) setLoadingMore(true);
+    const loadEvents = useCallback(async () => {
+        setLoading(true);
 
         try {
             let data: MatchplayTournament[] = [];
-            let moreAvailable = false;
+            // Use local variable to ensure we have latest location for sorting immediately
+            let currentLoc = userLocation;
 
             if (activeTab === 'My Tournaments') {
+                // Personal tournaments - uses Matchplay API
                 data = await getUserDashboard();
-                moreAvailable = false;
             } else {
+                // Public tournaments - uses Supabase
                 let targetStatus: 'active' | 'upcoming' | 'completed' = 'upcoming';
                 if (activeTab === 'Live') targetStatus = 'active';
                 if (activeTab === 'Completed') targetStatus = 'completed';
 
-                if (isNearbyOnly) {
-                    let userLat: number | null = null;
-                    let userLon: number | null = null;
-                    let userZip: string | null = null;
-                    let userState: string | null = null;
-
+                if (isNearbyOnly || nearbySort === 'distance') {
+                    // DISTANCE-BASED FETCHING (PostGIS)
                     try {
                         const { status } = await Location.requestForegroundPermissionsAsync();
                         if (status === 'granted') {
                             const location = await Location.getCurrentPositionAsync({});
-                            userLat = location.coords.latitude;
-                            userLon = location.coords.longitude;
+                            currentLoc = { lat: location.coords.latitude, lon: location.coords.longitude };
+                            setUserLocation(currentLoc); // Update state for UI/Search
+                            const radius = isNearbyOnly ? 100 : 25000; // 100 miles or Global (25k miles)
 
-                            try {
-                                const address = await Location.reverseGeocodeAsync({ latitude: userLat, longitude: userLon });
-                                if (address && address.length > 0) {
-                                    userZip = address[0].postalCode;
-                                    userState = address[0].region;
-                                    console.log(`[Events] User Context: ${userZip}, ${userState}`);
-                                }
-                            } catch (revErr) { /* ignore */ }
+                            if (activeTab === 'All') {
+                                const [nearbyLive, nearbyUpcoming] = await Promise.all([
+                                    getNearbyTournaments(
+                                        location.coords.latitude,
+                                        location.coords.longitude,
+                                        radius,
+                                        'active'
+                                    ),
+                                    getNearbyTournaments(
+                                        location.coords.latitude,
+                                        location.coords.longitude,
+                                        radius,
+                                        'upcoming'
+                                    )
+                                ]);
+                                data = [...nearbyLive, ...nearbyUpcoming];
+                            } else {
+                                data = await getNearbyTournaments(
+                                    location.coords.latitude,
+                                    location.coords.longitude,
+                                    radius,
+                                    targetStatus
+                                );
+                            }
+
+                            // (Sort removed from here, moved to end of function)
+                        } else {
+                            // Permission denied, fallback to standard date sort
+                            console.log('Location permission denied, falling back to standard sort');
+                            if (activeTab === 'All') {
+                                const live = await getSupabaseTournaments('active');
+                                const upcoming = await getSupabaseTournaments('upcoming');
+                                data = [...live, ...upcoming];
+                            } else {
+                                data = await getSupabaseTournaments(targetStatus);
+                            }
                         }
-                    } catch (err) { /* ignore */ }
-
-                    if (userLat && userLon) {
-                        const BATCH_SIZE_PAGES = 20;
-                        const startPage = ((pageNum - 1) * BATCH_SIZE_PAGES) + 1;
-
-                        console.log(`[Events] Scanning Nearby (${targetStatus}): Batch ${pageNum} (Pages ${startPage}-...)`);
-
-                        const result = await findNearbyTournaments(
-                            userLat, userLon, 100, BATCH_SIZE_PAGES,
-                            userZip, userState, startPage, targetStatus
-                        );
-
-                        data = result.tournaments;
-                        moreAvailable = result.scannedPages >= (startPage + BATCH_SIZE_PAGES - 1);
+                    } catch (err) {
+                        console.error('Location error:', err);
+                        // Fallback on error
+                        data = await getSupabaseTournaments(targetStatus);
                     }
                 } else {
+                    // STANDARD DATE-SORTED FETCH
                     if (activeTab === 'All') {
-                        const liveResult = await getTournaments('active', pageNum);
-                        const upcomingResult = await getTournaments('upcoming', pageNum);
-                        data = [...liveResult.tournaments, ...upcomingResult.tournaments];
-                        moreAvailable = liveResult.hasMore || upcomingResult.hasMore;
+                        const now = new Date();
+                        const todayStr = now.toLocaleDateString('en-CA');
+
+                        const live = await getSupabaseTournaments('active'); // Fetch all active (even started yesterday)
+                        const upcoming = await getSupabaseTournaments('upcoming', todayStr); // Fetch future only
+                        data = [...live, ...upcoming];
+                    } else if (activeTab === 'Upcoming') {
+                        const now = new Date();
+                        const todayStr = now.toLocaleDateString('en-CA');
+                        data = await getSupabaseTournaments('upcoming', todayStr);
                     } else {
-                        const result = await getTournaments(targetStatus, pageNum);
-                        data = result.tournaments;
-                        moreAvailable = result.hasMore;
+                        data = await getSupabaseTournaments(targetStatus);
                     }
                 }
             }
 
-            if (append) {
-                const combined = [...events, ...data];
-                const unique = Array.from(new Map(combined.map(item => [item.tournamentId || item.itemId || Math.random(), item])).values());
-                setEvents(unique);
-            } else {
-                const unique = Array.from(new Map(data.map(item => [item.tournamentId || item.itemId || Math.random(), item])).values());
-                setEvents(unique);
+            // Dedupe by tournamentId
+            const unique = Array.from(new Map(data.map(item => [item.tournamentId, item])).values());
+
+            // 1. FILTER: Show only events strictly starting Today or Future (User Request)
+            // "dates not from the past or started before the current date"
+            let finalEvents = unique;
+            if (activeTab !== 'Completed' && activeTab !== 'My Tournaments') {
+                const now = new Date();
+                const todayStr = now.toLocaleDateString('en-CA'); // YYYY-MM-DD format local
+
+                finalEvents = unique.filter(event => {
+                    if (!event.startLocalDate) return false;
+                    return event.startLocalDate >= todayStr;
+                });
             }
 
-            setHasMore(moreAvailable);
-            setPage(pageNum);
+            // 2. SORT: Apply Client-Side Sort (Date or Distance)
+            if (nearbySort === 'date') {
+                finalEvents.sort((a, b) => {
+                    const dateA = new Date(a.startLocalDate).getTime();
+                    const dateB = new Date(b.startLocalDate).getTime();
+                    if (isNaN(dateA)) return 1;
+                    if (isNaN(dateB)) return -1;
+                    if (activeTab === 'Completed') return dateB - dateA;
+                    return dateA - dateB;
+                });
+            } else if (nearbySort === 'distance' && currentLoc) {
+                finalEvents.sort((a, b) => {
+                    // Push items without location to the bottom
+                    if (!a.latitude || !a.longitude) return 1;
+                    if (!b.latitude || !b.longitude) return -1;
+
+                    const distA = getDistance(currentLoc!.lat, currentLoc!.lon, a.latitude, a.longitude);
+                    const distB = getDistance(currentLoc!.lat, currentLoc!.lon, b.latitude, b.longitude);
+                    return distA - distB;
+                });
+            }
+
+            setEvents(finalEvents);
+            setHasMore(false); // No pagination anymore
         } catch (e) {
-            console.error(e);
+            console.error('loadEvents error:', e);
         } finally {
             setLoading(false);
             setLoadingMore(false);
         }
-    }, [activeTab, isNearbyOnly, refreshing, events]);
+    }, [activeTab, isNearbyOnly, nearbySort]);
 
     const loadMore = useCallback(() => {
-        if (!loadingMore && hasMore && !loading) {
-            loadEvents(page + 1, true);
-        }
-    }, [loadingMore, hasMore, loading, page, loadEvents]);
+        // No pagination needed - we load all events at once
+    }, []);
 
     const onRefresh = useCallback(async () => {
         setRefreshing(true);
-        setPage(1);
-        setHasMore(true);
-        await loadEvents(1, false);
+        await loadEvents();
         setRefreshing(false);
     }, [loadEvents]);
 
     useEffect(() => {
-        setPage(1);
-        setHasMore(true);
-        loadEvents(1, false);
-    }, [activeTab, isNearbyOnly]);
+        let isMounted = true;
 
-    const filteredEvents = events.filter(event => {
-        if (search) {
-            const q = search.toLowerCase();
-            return event.name.toLowerCase().includes(q) || (event.locationName || '').toLowerCase().includes(q);
+        const fetchData = async () => {
+            setLoading(true);
+            try {
+                if (search.length >= 2) {
+                    // Search with active Status Filter
+                    const statuses = activeTab === 'All' ? undefined : getValidStatuses(activeTab.toLowerCase());
+                    let results = await searchTournaments(search, statuses);
+
+                    // Apply Client-Side Sort to Search Results
+                    if (nearbySort === 'distance') {
+                        // Ensure we have location
+                        let loc = userLocation;
+                        if (!loc) {
+                            try {
+                                const { status } = await Location.requestForegroundPermissionsAsync();
+                                if (status === 'granted') {
+                                    const l = await Location.getCurrentPositionAsync({});
+                                    loc = { lat: l.coords.latitude, lon: l.coords.longitude };
+                                    setUserLocation(loc);
+                                }
+                            } catch (e) {
+                                console.log('Loc error in search sort', e);
+                            }
+                        }
+
+                        if (loc) {
+                            results.sort((a, b) => {
+                                if (!a.latitude || !a.longitude) return 1;
+                                if (!b.latitude || !b.longitude) return -1;
+                                const distA = getDistance(loc!.lat, loc!.lon, a.latitude, a.longitude);
+                                const distB = getDistance(loc!.lat, loc!.lon, b.latitude, b.longitude);
+                                return distA - distB;
+                            });
+                        }
+                    } else {
+                        // Date sort (default for searchTournaments but explicit here if needed)
+                        // searchTournaments already sorts by date, but maybe enforce direction?
+                    }
+
+                    if (isMounted) setEvents(results);
+                } else {
+                    // Standard load (tabs or nearby)
+                    const results = await loadEvents();
+                    if (isMounted && results) setEvents(results);
+                }
+            } catch (e) {
+                console.error('Fetch error:', e);
+            } finally {
+                if (isMounted) setLoading(false);
+            }
+        };
+
+        // Debounce only if searching
+        if (search.length >= 2) {
+            const timer = setTimeout(fetchData, 400);
+            return () => clearTimeout(timer);
+        } else {
+            fetchData();
         }
-        return true;
-    });
+
+        return () => { isMounted = false; };
+    }, [search, activeTab, isNearbyOnly, nearbySort]); // Combined dependency
+
+    const filteredEvents = events; // No local filtering needed anymore
 
     const TABS: ('All' | 'Live' | 'Upcoming' | 'Completed' | 'My Tournaments')[] = [
         'All', 'Live', 'Upcoming', 'Completed', 'My Tournaments'
     ];
+
+    const handleNearbyToggle = useCallback((value: boolean) => {
+        setIsNearbyOnly(value);
+        if (value) {
+            setNearbySort('distance'); // Auto-switch to distance for utility
+        } else {
+            setNearbySort('date'); // Revert to date for speed
+        }
+    }, []);
 
     return (
         <View style={styles.container}>
@@ -303,6 +549,11 @@ export default function EventsScreen() {
                             value={search}
                             onChangeText={setSearch}
                         />
+                        {search.length > 0 && (
+                            <TouchableOpacity onPress={() => setSearch('')} style={styles.clearButton}>
+                                <MaterialCommunityIcons name="close-circle" size={20} color={THEME.textSecondary} />
+                            </TouchableOpacity>
+                        )}
                     </View>
                     <TouchableOpacity onPress={openDrawer} style={styles.filterButton}>
                         <MaterialCommunityIcons name="filter-variant" size={24} color="#fff" />
@@ -315,23 +566,15 @@ export default function EventsScreen() {
                     <ActivityIndicator size="large" color={THEME.accent} />
                 </View>
             ) : (
-                <FlatList
+                <FlashList
                     data={filteredEvents}
                     onRefresh={onRefresh}
                     refreshing={refreshing}
                     onEndReached={loadMore}
                     onEndReachedThreshold={0.5}
-                    keyExtractor={(item, index) => (item.tournamentId || item.itemId || index).toString()}
+                    keyExtractor={(item, index) => (item.tournamentId || index).toString()}
                     contentContainerStyle={{ padding: 16 }}
-                    getItemLayout={(data, index) => ({
-                        length: 116,
-                        offset: 116 * index,
-                        index,
-                    })}
-                    removeClippedSubviews={true}
-                    maxToRenderPerBatch={10}
-                    windowSize={5}
-                    initialNumToRender={10}
+                    estimatedItemSize={116}
                     ListFooterComponent={
                         loadingMore ? (
                             <View style={{ paddingVertical: 20, alignItems: 'center' }}>
@@ -339,7 +582,15 @@ export default function EventsScreen() {
                             </View>
                         ) : null
                     }
-                    renderItem={({ item }) => <EventCard item={item} />}
+                    renderItem={({ item }) => (
+                        <EventCard
+                            item={item}
+                            isExpanded={expandedId === item.tournamentId}
+                            onPress={() => setExpandedId(
+                                expandedId === item.tournamentId ? null : item.tournamentId
+                            )}
+                        />
+                    )}
                     ListEmptyComponent={
                         <View style={{ alignItems: 'center', marginTop: 40, paddingHorizontal: 32 }}>
                             <MaterialCommunityIcons
@@ -363,67 +614,96 @@ export default function EventsScreen() {
                         </View>
                     }
                 />
-            )}
+            )
+            }
 
             {/* Custom Drawer Overlay */}
-            {isDrawerOpen && (
-                <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer}>
-                    <Animated.View style={[styles.backdrop, backdropStyle]} />
-                </Pressable>
-            )}
+            {
+                isDrawerOpen && (
+                    <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer}>
+                        <Animated.View style={[styles.backdrop, backdropStyle]} />
+                    </Pressable>
+                )
+            }
 
-            {isDrawerOpen && (
-                <Animated.View style={[styles.drawer, drawerStyle]}>
-                    <View style={styles.drawerHeader}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                            <Text style={styles.drawerTitle}>Filters</Text>
-                            {loading && <ActivityIndicator size="small" color={THEME.accent} />}
-                        </View>
-                        <TouchableOpacity onPress={closeDrawer}>
-                            <MaterialCommunityIcons name="close" size={24} color={THEME.text} />
-                        </TouchableOpacity>
-                    </View>
-
-                    <View style={styles.drawerContent}>
-                        {/* Nearby Toggle */}
-                        <View style={styles.drawerRow}>
-                            <View style={{ flex: 1 }}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                    <MaterialCommunityIcons name="map-marker-radius" size={24} color={THEME.accent} style={{ marginRight: 8 }} />
-                                    <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Nearby Only</Text>
-                                </View>
-                                <Text style={{ color: THEME.textSecondary, fontSize: 12, marginTop: 4 }}>
-                                    Only show events within 100 miles
-                                </Text>
+            {
+                isDrawerOpen && (
+                    <Animated.View style={[styles.drawer, drawerStyle]}>
+                        <View style={styles.drawerHeader}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                                <Text style={styles.drawerTitle}>Filters</Text>
+                                {loading && <ActivityIndicator size="small" color={THEME.accent} />}
                             </View>
-                            <Switch
-                                value={isNearbyOnly}
-                                onValueChange={setIsNearbyOnly}
-                                trackColor={{ false: '#3e3e3e', true: 'rgba(0,180,216,0.3)' }}
-                                thumbColor={isNearbyOnly ? THEME.accent : '#f4f3f4'}
-                            />
+                            <TouchableOpacity onPress={closeDrawer}>
+                                <MaterialCommunityIcons name="close" size={24} color={THEME.text} />
+                            </TouchableOpacity>
                         </View>
 
-                        <Text style={styles.sectionTitle}>Event Status</Text>
-                        {TABS.map((tab) => (
-                            <TouchableOpacity
-                                key={tab}
-                                style={[styles.drawerItem, activeTab === tab && styles.activeDrawerItem]}
-                                onPress={() => setActiveTab(tab)}
-                            >
-                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                    {tab === 'Live' && <PulsingDot />}
-                                    <Text style={[styles.drawerItemText, activeTab === tab && styles.activeDrawerItemText]}>{tab}</Text>
+                        <View style={styles.drawerContent}>
+                            {/* Nearby Toggle */}
+                            <View style={styles.drawerRow}>
+                                <View style={{ flex: 1 }}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <MaterialCommunityIcons name="map-marker-radius" size={24} color={THEME.accent} style={{ marginRight: 8 }} />
+                                        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Nearby Only</Text>
+                                    </View>
+                                    <Text style={{ color: THEME.textSecondary, fontSize: 12, marginTop: 4 }}>
+                                        Limit search radius to 100 miles
+                                    </Text>
                                 </View>
-                                {activeTab === tab && (
-                                    <MaterialCommunityIcons name="check" size={18} color="#fff" />
+                                <Switch
+                                    value={isNearbyOnly}
+                                    onValueChange={handleNearbyToggle}
+                                    trackColor={{ false: '#3e3e3e', true: 'rgba(0,180,216,0.3)' }}
+                                    thumbColor={isNearbyOnly ? THEME.accent : '#f4f3f4'}
+                                />
+                            </View>
+
+                            {/* Sort Options */}
+                            <View style={{ marginBottom: 24 }}>
+                                <Text style={styles.sectionTitle}>Sort By</Text>
+                                <View style={styles.sortContainer}>
+                                    <TouchableOpacity
+                                        style={[styles.sortOption, nearbySort === 'distance' && styles.activeSortOption]}
+                                        onPress={() => setNearbySort('distance')}
+                                    >
+                                        <Text style={[styles.sortText, nearbySort === 'distance' && styles.activeSortText]}>Distance</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[styles.sortOption, nearbySort === 'date' && styles.activeSortOption]}
+                                        onPress={() => setNearbySort('date')}
+                                    >
+                                        <Text style={[styles.sortText, nearbySort === 'date' && styles.activeSortText]}>Date</Text>
+                                    </TouchableOpacity>
+                                </View>
+                                {nearbySort === 'distance' && !isNearbyOnly && (
+                                    <Text style={{ color: THEME.textSecondary, fontSize: 11, marginTop: 6, fontStyle: 'italic' }}>
+                                        Showing closest events worldwide (no distance limit).
+                                    </Text>
                                 )}
-                            </TouchableOpacity>
-                        ))}
-                    </View>
-                </Animated.View>
-            )}
-        </View>
+                            </View>
+
+                            <Text style={styles.sectionTitle}>Event Status</Text>
+                            {TABS.map((tab) => (
+                                <TouchableOpacity
+                                    key={tab}
+                                    style={[styles.drawerItem, activeTab === tab && styles.activeDrawerItem]}
+                                    onPress={() => setActiveTab(tab)}
+                                >
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        {tab === 'Live' && <PulsingDot />}
+                                        <Text style={[styles.drawerItemText, activeTab === tab && styles.activeDrawerItemText]}>{tab}</Text>
+                                    </View>
+                                    {activeTab === tab && (
+                                        <MaterialCommunityIcons name="check" size={18} color="#fff" />
+                                    )}
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                    </Animated.View>
+                )
+            }
+        </View >
     );
 }
 
@@ -453,6 +733,9 @@ const styles = StyleSheet.create({
         color: THEME.text,
         fontSize: 16,
     },
+    clearButton: {
+        padding: 4,
+    },
     filterButton: {
         width: 48,
         height: 48,
@@ -467,22 +750,76 @@ const styles = StyleSheet.create({
         backgroundColor: THEME.card,
         borderRadius: 16,
         marginBottom: 16,
-        flexDirection: 'row',
         overflow: 'hidden',
-        height: 100,
         borderWidth: 1,
         borderColor: 'rgba(255,255,255,0.05)',
     },
+    cardExpanded: {
+        borderColor: THEME.accent,
+        borderWidth: 1,
+    },
+    cardCollapsed: {
+        flexDirection: 'row',
+        height: 100,
+    },
     cardImage: {
         width: 100,
-        height: '100%',
+        height: 100,
         backgroundColor: '#2b2d42',
     },
     cardContent: {
         flex: 1,
         padding: 12,
         justifyContent: 'center',
-
+    },
+    cardExpandedContent: {
+        padding: 16,
+        paddingTop: 0,
+    },
+    expandedDivider: {
+        height: 1,
+        backgroundColor: 'rgba(255,255,255,0.1)',
+        marginBottom: 16,
+    },
+    expandedRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 10,
+    },
+    expandedLabel: {
+        color: THEME.text,
+        fontSize: 14,
+        marginLeft: 10,
+        flex: 1,
+    },
+    expandedDescription: {
+        color: THEME.textSecondary,
+        fontSize: 13,
+        lineHeight: 18,
+        marginTop: 4,
+        marginBottom: 12,
+    },
+    expandedActions: {
+        flexDirection: 'row',
+        gap: 12,
+        marginTop: 12,
+    },
+    actionButton: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        paddingVertical: 12,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    actionText: {
+        color: THEME.accent,
+        fontWeight: 'bold',
+        fontSize: 14,
+        marginLeft: 8,
     },
     cardHeader: {
         flexDirection: 'row',
@@ -596,4 +933,107 @@ const styles = StyleSheet.create({
         color: THEME.accent,
         fontWeight: 'bold',
     },
+    // Bottom Sheet Styles
+    sheetBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'flex-end',
+    },
+    sheetContainer: {
+        backgroundColor: THEME.card,
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        paddingHorizontal: 20,
+        paddingBottom: 40,
+        maxHeight: '70%',
+    },
+    sheetHandle: {
+        width: 40,
+        height: 4,
+        backgroundColor: THEME.textSecondary,
+        borderRadius: 2,
+        alignSelf: 'center',
+        marginVertical: 12,
+    },
+    sheetTitle: {
+        color: '#fff',
+        fontSize: 22,
+        fontWeight: 'bold',
+        marginBottom: 12,
+    },
+    sheetBadge: {
+        alignSelf: 'flex-start',
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 6,
+        marginBottom: 20,
+    },
+    sheetBadgeText: {
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: 'bold',
+    },
+    sheetSection: {
+        marginBottom: 20,
+    },
+    sheetRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 12,
+    },
+    sheetLabel: {
+        color: THEME.text,
+        fontSize: 15,
+        marginLeft: 12,
+        flex: 1,
+    },
+    sheetSectionTitle: {
+        color: THEME.accent,
+        fontSize: 14,
+        fontWeight: 'bold',
+        marginBottom: 8,
+        textTransform: 'uppercase',
+    },
+    sheetDescription: {
+        color: THEME.textSecondary,
+        fontSize: 14,
+        lineHeight: 20,
+    },
+    sheetButton: {
+        backgroundColor: THEME.accent,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 14,
+        borderRadius: 12,
+        marginTop: 10,
+    },
+    sheetButtonText: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
+    sortContainer: {
+        flexDirection: 'row',
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        borderRadius: 8,
+        padding: 4,
+    },
+    sortOption: {
+        flex: 1,
+        paddingVertical: 8,
+        alignItems: 'center',
+        borderRadius: 6
+    },
+    activeSortOption: {
+        backgroundColor: THEME.accent
+    },
+    sortText: {
+        color: THEME.textSecondary,
+        fontSize: 14,
+        fontWeight: '600'
+    },
+    activeSortText: {
+        color: '#fff'
+    }
 });

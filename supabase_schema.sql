@@ -50,3 +50,54 @@ as $$
   order by
     location <-> st_setsrid(st_makepoint(user_lon, user_lat), 4326)::geography;
 $$;
+
+-- Geocode Cache Table (for caching address -> coordinates lookups)
+-- This avoids re-geocoding the same venue addresses on every sync
+create table if not exists public.geocode_cache (
+    address text primary key,
+    latitude double precision not null,
+    longitude double precision not null,
+    created_at timestamp with time zone default now()
+);
+
+-- Index for faster lookups
+create index if not exists geocode_cache_address_idx on public.geocode_cache (address);
+
+-- OPDB Cache for full catalog search
+create table if not exists opdb_machines (
+  opdb_id text primary key,
+  name text not null,
+  manufacturer_name text,
+  year text,
+  image_url text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable RLS
+alter table opdb_machines enable row level security;
+
+-- Policies (Public Read, Service Role Write)
+create policy "Public machines are viewable by everyone"
+  on opdb_machines for select
+  using (true);
+
+create policy "Service role can insert/update machines"
+  on opdb_machines for insert
+  with check (true);
+
+create policy "Service role can update machines"
+  on opdb_machines for update
+  using (true);
+
+-- Search Index
+alter table opdb_machines add column if not exists search_vector tsvector
+  generated always as (to_tsvector('english', name || ' ' || coalesce(manufacturer_name, ''))) stored;
+
+create index if not exists machines_search_idx on opdb_machines using GIN (search_vector);
+
+-- New Columns for List View Details
+alter table opdb_machines add column if not exists type text;
+alter table opdb_machines add column if not exists display text;
+alter table opdb_machines add column if not exists player_count int;
+alter table opdb_machines add column if not exists description text;
