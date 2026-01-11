@@ -202,6 +202,22 @@ const EventCard = React.memo(({ item, isExpanded, onPress }: {
                                     <Text style={styles.cardDetails} numberOfLines={1}>{locationDisplay}</Text>
                                 </View>
                                 <Text style={styles.cardDetails}>{dateDisplay}</Text>
+
+                                {/* Source Badges */}
+                                <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>
+                                    {(item.source === 'ifpa' || item.source === 'both') && (
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255, 215, 0, 0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: 'rgba(255, 215, 0, 0.3)' }}>
+                                            <MaterialCommunityIcons name="trophy" size={10} color="#FFD700" style={{ marginRight: 3 }} />
+                                            <Text style={{ color: '#FFD700', fontSize: 10, fontWeight: 'bold' }}>IFPA</Text>
+                                        </View>
+                                    )}
+                                    {(item.source === 'matchplay' || item.source === 'both') && (
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(72, 202, 228, 0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: 'rgba(72, 202, 228, 0.3)' }}>
+                                            <MaterialCommunityIcons name="gamepad-variant" size={10} color="#48cae4" style={{ marginRight: 3 }} />
+                                            <Text style={{ color: '#48cae4', fontSize: 10, fontWeight: 'bold' }}>MATCHPLAY</Text>
+                                        </View>
+                                    )}
+                                </View>
                             </View>
                             <MaterialCommunityIcons
                                 name={isExpanded ? "chevron-up" : "chevron-down"}
@@ -251,9 +267,29 @@ const EventCard = React.memo(({ item, isExpanded, onPress }: {
                                 <Text style={styles.actionText}>Add to Calendar</Text>
                             </TouchableOpacity>
 
-                            <TouchableOpacity style={styles.actionButton} onPress={openMatchplay}>
-                                <MaterialCommunityIcons name="open-in-new" size={18} color={THEME.accent} />
-                                <Text style={styles.actionText}>Matchplay</Text>
+                            <TouchableOpacity style={styles.actionButton} onPress={() => {
+                                if (item.source === 'ifpa') {
+                                    // Extract URL from description (added by utils/ifpa.ts)
+                                    const urlMatch = item.description.match(/(https?:\/\/[^\s]+)/g);
+                                    if (urlMatch && urlMatch.length > 0) {
+                                        // Use the last one as it's likely the specific website appended
+                                        Linking.openURL(urlMatch[urlMatch.length - 1]);
+                                    } else {
+                                        // Fallback to IFPA generic
+                                        Linking.openURL('https://www.ifpapinball.com/calendar/');
+                                    }
+                                } else {
+                                    openMatchplay();
+                                }
+                            }}>
+                                <MaterialCommunityIcons
+                                    name={item.source === 'ifpa' ? "web" : "open-in-new"}
+                                    size={18}
+                                    color={THEME.accent}
+                                />
+                                <Text style={styles.actionText}>
+                                    {item.source === 'ifpa' ? "Website" : "Matchplay"}
+                                </Text>
                             </TouchableOpacity>
                         </View>
                     </View>
@@ -266,6 +302,7 @@ const EventCard = React.memo(({ item, isExpanded, onPress }: {
 export default function EventsScreen() {
     const [activeTab, setActiveTab] = useState<'All' | 'Live' | 'Upcoming' | 'Completed' | 'My Tournaments'>('All');
     const [isNearbyOnly, setIsNearbyOnly] = useState(false);
+    const [isIfpaOnly, setIsIfpaOnly] = useState(false);
     const [nearbySort, setNearbySort] = useState<'distance' | 'date'>('date');
     const [search, setSearch] = useState('');
     const [events, setEvents] = useState<MatchplayTournament[]>([]);
@@ -356,6 +393,28 @@ export default function EventsScreen() {
                                 );
                             }
 
+                            // --- IFPA INTEGRATION ---
+                            // Fetch IFPA data if we have location (IFPA requires lat/lon)
+                            if (activeTab === 'All' || activeTab === 'Upcoming') {
+                                try {
+                                    // IFPA calendar fetch (Defaults to 50 miles, maybe expand if verified?)
+                                    // Only fetch if "Nearby" is on or if we have location rights
+                                    const { searchIfpaCalendar } = require('../../utils/ifpa');
+                                    const ifpaEvents = await searchIfpaCalendar(
+                                        location.coords.latitude,
+                                        location.coords.longitude,
+                                        Math.min(radius, 100) // IFPA API might have limit or we want local for now
+                                    );
+
+                                    if (ifpaEvents.length > 0) {
+                                        data = [...data, ...ifpaEvents];
+                                    }
+                                } catch (ifpaErr) {
+                                    console.log('IFPA fetch skipped/failed', ifpaErr);
+                                }
+                            }
+                            // ------------------------
+
                             // (Sort removed from here, moved to end of function)
                         } else {
                             // Permission denied, fallback to standard date sort
@@ -392,8 +451,52 @@ export default function EventsScreen() {
                 }
             }
 
-            // Dedupe by tournamentId
-            const unique = Array.from(new Map(data.map(item => [item.tournamentId, item])).values());
+            // Deduplicate and Merge MatchPlay vs IFPA
+            const matchplayEvents = data.filter(e => e.source !== 'ifpa');
+            const ifpaEvents = data.filter(e => e.source === 'ifpa');
+
+            // Map for quick lookup of MatchPlay events by "Date|NameStub"
+            // Using fuzzier matching: normalized name + date
+            const mergedEvents = [...matchplayEvents];
+
+            ifpaEvents.forEach(ifpaEv => {
+                const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const ifpaName = normalize(ifpaEv.name);
+
+                // Find match
+                const matchIndex = mergedEvents.findIndex(mpEv => {
+                    const mpName = normalize(mpEv.name);
+                    // Check Date match (exact)
+                    if (mpEv.startLocalDate !== ifpaEv.startLocalDate) return false;
+
+                    // Check Name match (contains or vice versa)
+                    return mpName.includes(ifpaName) || ifpaName.includes(mpName);
+                });
+
+                if (matchIndex >= 0) {
+                    // Start of Merge: Found duplicate!
+                    // Update source to 'both' to show both badges
+                    mergedEvents[matchIndex] = {
+                        ...mergedEvents[matchIndex],
+                        source: 'both',
+                        // Optional: Append description?
+                        // description: mergedEvents[matchIndex].description + '\n' + ifpaEv.description
+                    };
+                } else {
+                    // Unique IFPA event
+                    // Ensure ID doesn't collide? 
+                    // IFPA IDs are string-parsed ints, Matchplay are ints. 
+                    // Let's negate IFPA IDs to avoid collision with Matchplay positive IDs?
+                    // Or verify range. IFPA ~100k, Matchplay ~100k. Collision likely.
+                    // We'll use negative IDs for IFPA-only events in this view to be safe.
+                    mergedEvents.push({
+                        ...ifpaEv,
+                        tournamentId: -Math.abs(ifpaEv.tournamentId) // Negative ID for IFPA-sourced
+                    });
+                }
+            });
+
+            const unique = mergedEvents;
 
             // 1. FILTER: Show only events strictly starting Today or Future (User Request)
             // "dates not from the past or started before the current date"
@@ -462,34 +565,75 @@ export default function EventsScreen() {
                     let results = await searchTournaments(search, statuses);
 
                     // Apply Client-Side Sort to Search Results
-                    if (nearbySort === 'distance') {
-                        // Ensure we have location
-                        let loc = userLocation;
-                        if (!loc) {
-                            try {
-                                const { status } = await Location.requestForegroundPermissionsAsync();
-                                if (status === 'granted') {
-                                    const l = await Location.getCurrentPositionAsync({});
-                                    loc = { lat: l.coords.latitude, lon: l.coords.longitude };
-                                    setUserLocation(loc);
-                                }
-                            } catch (e) {
-                                console.log('Loc error in search sort', e);
+                    let loc = userLocation;
+                    if (!loc) {
+                        try {
+                            const { status } = await Location.requestForegroundPermissionsAsync();
+                            if (status === 'granted') {
+                                const l = await Location.getCurrentPositionAsync({});
+                                loc = { lat: l.coords.latitude, lon: l.coords.longitude };
+                                setUserLocation(loc);
                             }
+                        } catch (e) {
+                            console.log('Loc error in search sort', e);
                         }
+                    }
 
-                        if (loc) {
-                            results.sort((a, b) => {
-                                if (!a.latitude || !a.longitude) return 1;
-                                if (!b.latitude || !b.longitude) return -1;
-                                const distA = getDistance(loc!.lat, loc!.lon, a.latitude, a.longitude);
-                                const distB = getDistance(loc!.lat, loc!.lon, b.latitude, b.longitude);
-                                return distA - distB;
-                            });
+                    // --- IFPA SEARCH INTEGRATION ---
+                    // Since IFPA doesn't support global text search easily, we search local calendar and filter
+                    if (loc) {
+                        try {
+                            const { searchIfpaCalendar } = require('../../utils/ifpa');
+                            const ifpaEvents = await searchIfpaCalendar(
+                                loc.lat,
+                                loc.lon,
+                                100 // 100 miles radius for search
+                            );
+
+                            const queryLower = search.toLowerCase();
+                            const matchingIfpa = ifpaEvents.filter((e: MatchplayTournament) =>
+                                e.name.toLowerCase().includes(queryLower)
+                            );
+
+                            if (matchingIfpa.length > 0) {
+                                // Dedupe/Merge Logic (Same as loadEvents)
+                                const matchplayEvents = results.filter(e => e.source !== 'ifpa');
+                                const existingIfpa = results.filter(e => e.source === 'ifpa'); // Should be empty usually
+
+                                const mergedEvents = [...matchplayEvents];
+
+                                matchingIfpa.forEach((ifpaEv: MatchplayTournament) => {
+                                    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                                    const ifpaName = normalize(ifpaEv.name);
+
+                                    const matchIndex = mergedEvents.findIndex(mpEv => {
+                                        const mpName = normalize(mpEv.name);
+                                        if (mpEv.startLocalDate !== ifpaEv.startLocalDate) return false;
+                                        return mpName.includes(ifpaName) || ifpaName.includes(mpName);
+                                    });
+
+                                    if (matchIndex >= 0) {
+                                        mergedEvents[matchIndex] = { ...mergedEvents[matchIndex], source: 'both' };
+                                    } else {
+                                        mergedEvents.push({ ...ifpaEv, tournamentId: -Math.abs(ifpaEv.tournamentId) });
+                                    }
+                                });
+                                results = mergedEvents;
+                            }
+                        } catch (err) {
+                            console.log('IFPA search error', err);
                         }
-                    } else {
-                        // Date sort (default for searchTournaments but explicit here if needed)
-                        // searchTournaments already sorts by date, but maybe enforce direction?
+                    }
+                    // -------------------------------
+
+                    if (nearbySort === 'distance' && loc) {
+                        results.sort((a, b) => {
+                            if (!a.latitude || !a.longitude) return 1;
+                            if (!b.latitude || !b.longitude) return -1;
+                            const distA = getDistance(loc!.lat, loc!.lon, a.latitude, a.longitude);
+                            const distB = getDistance(loc!.lat, loc!.lon, b.latitude, b.longitude);
+                            return distA - distB;
+                        });
                     }
 
                     if (isMounted) setEvents(results);
@@ -516,7 +660,10 @@ export default function EventsScreen() {
         return () => { isMounted = false; };
     }, [search, activeTab, isNearbyOnly, nearbySort]); // Combined dependency
 
-    const filteredEvents = events; // No local filtering needed anymore
+    const filteredEvents = React.useMemo(() => {
+        if (!isIfpaOnly) return events;
+        return events.filter(e => e.source === 'ifpa' || e.source === 'both');
+    }, [events, isIfpaOnly]);
 
     const TABS: ('All' | 'Live' | 'Upcoming' | 'Completed' | 'My Tournaments')[] = [
         'All', 'Live', 'Upcoming', 'Completed', 'My Tournaments'
@@ -656,6 +803,25 @@ export default function EventsScreen() {
                                     onValueChange={handleNearbyToggle}
                                     trackColor={{ false: '#3e3e3e', true: 'rgba(0,180,216,0.3)' }}
                                     thumbColor={isNearbyOnly ? THEME.accent : '#f4f3f4'}
+                                />
+                            </View>
+
+                            {/* IFPA Only Toggle */}
+                            <View style={styles.drawerRow}>
+                                <View style={{ flex: 1 }}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <MaterialCommunityIcons name="trophy" size={24} color="#FFD700" style={{ marginRight: 8 }} />
+                                        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>IFPA Only</Text>
+                                    </View>
+                                    <Text style={{ color: THEME.textSecondary, fontSize: 12, marginTop: 4 }}>
+                                        Show only sanctioned events
+                                    </Text>
+                                </View>
+                                <Switch
+                                    value={isIfpaOnly}
+                                    onValueChange={setIsIfpaOnly}
+                                    trackColor={{ false: '#3e3e3e', true: 'rgba(255, 215, 0, 0.3)' }}
+                                    thumbColor={isIfpaOnly ? '#FFD700' : '#f4f3f4'}
                                 />
                             </View>
 

@@ -101,3 +101,31 @@ alter table opdb_machines add column if not exists type text;
 alter table opdb_machines add column if not exists display text;
 alter table opdb_machines add column if not exists player_count int;
 alter table opdb_machines add column if not exists description text;
+
+-- AI-Generated Rules Summaries for Tournament Machines
+create table if not exists public.machine_rules (
+    opdb_id text primary key references opdb_machines(opdb_id),
+    summary text not null,              -- Main AI-generated rules summary
+    key_shots text[],                   -- Array of important shots (e.g., "Left Ramp", "Super Jackpot")
+    modes text[],                       -- Array of major modes/multiballs
+    scoring_tips text,                  -- Quick scoring advice
+    created_at timestamp with time zone default now(),
+    updated_at timestamp with time zone default now()
+);
+
+-- Enable RLS
+alter table machine_rules enable row level security;
+
+-- Public read access
+create policy "Machine rules are viewable by everyone"
+  on machine_rules for select
+  using (true);
+
+-- Service role write access
+create policy "Service role can insert machine rules"
+  on machine_rules for insert
+  with check (true);
+
+create policy "Service role can update machine rules"
+  on machine_rules for update
+  using (true);

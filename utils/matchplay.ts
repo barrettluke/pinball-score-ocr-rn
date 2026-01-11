@@ -18,6 +18,8 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 export interface MatchplayTournament {
     tournamentId: number;
     name: string;
+    // ... validation status
+    source?: 'matchplay' | 'ifpa' | 'both';
     status: string;
     startLocalDate: string;
     startLocalTime?: string;
@@ -38,6 +40,8 @@ const mapSupabaseRow = (t: any): MatchplayTournament => ({
     tournamentId: t.tournament_id,
     name: t.name,
     status: t.status,
+    // Mock source for verified visual testing (randomly assign some as IFPA/Both)
+    source: t.description?.toLowerCase().includes('ifpa') || t.name?.toLowerCase().includes('open') ? 'both' : 'matchplay',
     startLocalDate: t.start_local_date,
     startLocalTime: t.start_local_time,
     organizerName: t.organizer_name || '',

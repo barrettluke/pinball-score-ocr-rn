@@ -29,6 +29,14 @@ const initDatabase = async (database: SQLite.SQLiteDatabase) => {
       date TEXT NOT NULL,
       FOREIGN KEY(machine_id) REFERENCES machines(opdb_id)
     );
+    CREATE TABLE IF NOT EXISTS machine_rules (
+      opdb_id TEXT PRIMARY KEY,
+      summary TEXT NOT NULL,
+      key_shots TEXT,
+      modes TEXT,
+      scoring_tips TEXT,
+      updated_at TEXT
+    );
   `);
 
   // Migration for existing tables

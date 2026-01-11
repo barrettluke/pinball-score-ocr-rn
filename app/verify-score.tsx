@@ -199,17 +199,30 @@ export default function VerifyScoreScreen() {
     );
 }
 
+const THEME = {
+    background: '#0d1b2a',
+    card: '#1b263b',
+    accent: '#00b4d8',
+    text: '#e0e1dd',
+    textSecondary: '#778da9',
+    success: '#2ec4b6',
+    border: '#415a77',
+};
+
 const styles = StyleSheet.create({
     container: {
         flexGrow: 1,
-        backgroundColor: '#fff',
+        backgroundColor: THEME.background,
         padding: 20,
+        paddingTop: 60,
     },
     image: {
         width: '100%',
         height: 200,
-        borderRadius: 10,
+        borderRadius: 12,
         marginBottom: 20,
+        borderWidth: 1,
+        borderColor: THEME.border,
     },
     form: {
         gap: 15,
@@ -217,23 +230,25 @@ const styles = StyleSheet.create({
     label: {
         fontSize: 16,
         fontWeight: '600',
-        color: '#333',
+        color: THEME.text,
     },
     input: {
         fontSize: 24,
         borderWidth: 1,
-        borderColor: '#ccc',
-        borderRadius: 8,
-        padding: 10,
+        borderColor: THEME.border,
+        borderRadius: 10,
+        padding: 12,
         fontWeight: 'bold',
         textAlign: 'center',
+        backgroundColor: THEME.card,
+        color: THEME.text,
     },
     saveButton: {
-        backgroundColor: '#28a745',
-        padding: 15,
-        borderRadius: 10,
+        backgroundColor: THEME.success,
+        padding: 16,
+        borderRadius: 12,
         alignItems: 'center',
-        marginTop: 10,
+        marginTop: 15,
     },
     saveButtonText: {
         color: '#fff',
@@ -241,13 +256,15 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
     },
     linkButton: {
-        padding: 10,
-        backgroundColor: '#f0f0f0',
-        borderRadius: 8,
+        padding: 12,
+        backgroundColor: THEME.card,
+        borderRadius: 10,
         alignItems: 'center',
+        borderWidth: 1,
+        borderColor: THEME.border,
     },
     linkText: {
-        color: '#007AFF',
+        color: THEME.accent,
     },
     machineList: {
         flexDirection: 'row',
@@ -255,22 +272,23 @@ const styles = StyleSheet.create({
         gap: 10,
     },
     machineOption: {
-        paddingHorizontal: 12,
-        paddingVertical: 8,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
         borderRadius: 20,
         borderWidth: 1,
-        borderColor: '#ddd',
-        backgroundColor: '#f9f9f9',
+        borderColor: THEME.border,
+        backgroundColor: THEME.card,
     },
     selectedMachine: {
-        backgroundColor: '#007AFF',
-        borderColor: '#007AFF',
+        backgroundColor: THEME.accent,
+        borderColor: THEME.accent,
     },
     machineText: {
-        color: '#333',
+        color: THEME.text,
     },
     selectedMachineText: {
         color: '#fff',
+        fontWeight: '600',
     },
     searchContainer: {
         flexDirection: 'row',
@@ -280,16 +298,17 @@ const styles = StyleSheet.create({
     searchInput: {
         flex: 1,
         borderWidth: 1,
-        borderColor: '#ccc',
-        borderRadius: 8,
-        padding: 8,
-        backgroundColor: '#f9f9f9',
+        borderColor: THEME.border,
+        borderRadius: 10,
+        padding: 10,
+        backgroundColor: THEME.card,
+        color: THEME.text,
     },
     searchButton: {
-        backgroundColor: '#007AFF',
+        backgroundColor: THEME.accent,
         justifyContent: 'center',
-        paddingHorizontal: 15,
-        borderRadius: 8,
+        paddingHorizontal: 18,
+        borderRadius: 10,
     },
     searchButtonText: {
         color: '#fff',
@@ -298,21 +317,23 @@ const styles = StyleSheet.create({
     searchResults: {
         marginBottom: 10,
         borderWidth: 1,
-        borderColor: '#eee',
-        borderRadius: 8,
-        padding: 5,
+        borderColor: THEME.border,
+        borderRadius: 10,
+        padding: 8,
+        backgroundColor: THEME.card,
     },
     resultsLabel: {
         fontSize: 12,
-        color: '#666',
+        color: THEME.textSecondary,
         marginBottom: 5,
     },
     resultItem: {
-        padding: 10,
+        padding: 12,
         borderBottomWidth: 1,
-        borderBottomColor: '#eee',
+        borderBottomColor: THEME.border,
     },
     resultText: {
         fontWeight: '600',
+        color: THEME.text,
     }
 });

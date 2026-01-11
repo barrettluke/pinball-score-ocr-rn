@@ -1,11 +1,15 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { FlashList } from '@shopify/flash-list';
 import { Image } from 'expo-image';
+import * as ExpoLocation from 'expo-location';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import PinballMap from '../../components/PinballMap';
 import { getDatabase } from '../../utils/database';
 import { fetchMachineDetails, getTopManufacturers, OPDBMachine, OPDBMachineDetails, searchMachines } from '../../utils/opdb';
+import { findLocationsWithFavorites, PinballMapLocation } from '../../utils/pinballmap';
+import { getRulesSummary, hasLocalRules, MachineRules, syncRulesSummaries } from '../../utils/rules';
 
 const THEME = {
     background: '#0d1b2a',
@@ -77,6 +81,8 @@ const getRulesLink = (machine: OPDBMachine) => {
     }
 };
 
+const DOM_CONFIG = { matchContents: true };
+
 export default function SearchScreen() {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState<OPDBMachine[]>([]);
@@ -87,6 +93,7 @@ export default function SearchScreen() {
     const [isSaving, setIsSaving] = useState(false);
     const [savingMachineId, setSavingMachineId] = useState<string | null>(null);
     const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+    const [rulesSummary, setRulesSummary] = useState<MachineRules | null>(null);
     const [activeFilter, setActiveFilter] = useState('All');
 
     // Dynamic Manufacturers
@@ -101,11 +108,22 @@ export default function SearchScreen() {
     const [manufacturerSearch, setManufacturerSearch] = useState('');
     const [isGlossaryVisible, setIsGlossaryVisible] = useState(false);
 
+    // Pinball Map State
+    const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
+    const [showMap, setShowMap] = useState(true);
+    const [nearbyLocations, setNearbyLocations] = useState<{ location: PinballMapLocation; matchingMachines: string[] }[]>([]);
+    const [loadingLocations, setLoadingLocations] = useState(false);
+    const [selectedLocation, setSelectedLocation] = useState<{ location: PinballMapLocation; matchingMachines: string[] } | null>(null);
+
     // Load manufacturers on mount
     useFocusEffect(
         useCallback(() => {
             loadManufacturers();
             loadFavoriteIds();
+            // Sync rules on first load if not cached
+            hasLocalRules().then(has => {
+                if (!has) syncRulesSummaries();
+            });
         }, [])
     );
 
@@ -117,6 +135,51 @@ export default function SearchScreen() {
             setFavoriteIds(new Set(rows.map(r => r.opdb_id)));
         } catch (e) {
             console.error('Error loading favorite IDs:', e);
+        }
+    };
+
+    // Request location and fetch nearby pinball locations when on Favorites
+    useEffect(() => {
+        if (activeFilter === 'Favorites' && showMap) {
+            requestLocationAndFetchNearby();
+        }
+    }, [activeFilter, showMap]);
+
+    const requestLocationAndFetchNearby = async () => {
+        try {
+            setLoadingLocations(true);
+
+            // Request location permission
+            const { status } = await ExpoLocation.requestForegroundPermissionsAsync();
+            if (status !== 'granted') {
+                Alert.alert('Permission Denied', 'Location access is needed to show nearby pinball locations.');
+                setLoadingLocations(false);
+                return;
+            }
+
+            // Get current location
+            const location = await ExpoLocation.getCurrentPositionAsync({});
+            const { latitude, longitude } = location.coords;
+            setUserLocation({ lat: latitude, lon: longitude });
+
+            // Get favorite machine names
+            const db = await getDatabase();
+            const favorites: { name: string }[] = await db.getAllAsync('SELECT name FROM machines');
+            const favoriteNames = favorites.map(f => f.name);
+
+            if (favoriteNames.length === 0) {
+                setNearbyLocations([]);
+                setLoadingLocations(false);
+                return;
+            }
+
+            // Search for locations with these machines
+            const locations = await findLocationsWithFavorites(latitude, longitude, favoriteNames, 60);
+            setNearbyLocations(locations);
+        } catch (error) {
+            console.error('Error fetching nearby locations:', error);
+        } finally {
+            setLoadingLocations(false);
         }
     };
 
@@ -203,7 +266,7 @@ export default function SearchScreen() {
 
         // If Favorites, load local
         if (activeFilter === 'Favorites' && !manufacturerQuery) {
-            loadSavedMachines();
+            loadSavedMachines(q);
             return;
         }
 
@@ -238,14 +301,24 @@ export default function SearchScreen() {
     };
 
     // Load saved machines from local database (Favorites)
-    const loadSavedMachines = async () => {
+    const loadSavedMachines = async (searchQuery: string = '') => {
         try {
             setLoading(true);
             setHasMore(false); // No pagination for local favorites currently
             const db = await getDatabase();
-            const saved: any[] = await db.getAllAsync(
-                'SELECT opdb_id, name, manufacturer, year, image_url FROM machines ORDER BY name'
-            );
+
+            let query = 'SELECT opdb_id, name, manufacturer, year, image_url FROM machines';
+            const params: string[] = [];
+
+            if (searchQuery.trim().length > 0) {
+                query += ' WHERE name LIKE ?';
+                params.push(`%${searchQuery.trim()}%`);
+            }
+
+            query += ' ORDER BY name';
+
+            const saved: any[] = await db.getAllAsync(query, params);
+
             setResults(saved.map(m => ({
                 opdb_id: m.opdb_id,
                 name: m.name,
@@ -295,12 +368,20 @@ export default function SearchScreen() {
     const handleMachineTap = async (machine: OPDBMachine) => {
         setSelectedMachine(machine);
         setExtendedDetails(null); // Reset
+        setRulesSummary(null); // Reset rules
         setIsModalVisible(true);
 
-        // Fetch full details
-        const details = await fetchMachineDetails(machine.opdb_id);
+        // Fetch full details and rules in parallel
+        const [details, rules] = await Promise.all([
+            fetchMachineDetails(machine.opdb_id),
+            getRulesSummary(machine.opdb_id)
+        ]);
+
         if (details && details.opdb_id === machine.opdb_id) {
             setExtendedDetails(details);
+        }
+        if (rules) {
+            setRulesSummary(rules);
         }
     };
 
@@ -361,6 +442,10 @@ export default function SearchScreen() {
         setSelectedMachine(null);
     };
 
+    const handleLocationSelect = useCallback((id: number) => {
+        Linking.openURL(`https://pinballmap.com/map?by_location_id=${id}`);
+    }, []);
+
     return (
         <View style={styles.container}>
             {/* Page Title */}
@@ -416,6 +501,81 @@ export default function SearchScreen() {
                     </TouchableOpacity>
                 ))}
             </ScrollView>
+
+            {/* Pinball Map View (only show on Favorites) */}
+            {activeFilter === 'Favorites' && showMap && (
+                <View style={styles.mapContainer}>
+                    <View style={styles.mapHeader}>
+                        <Text style={styles.mapTitle}>Nearby Locations</Text>
+                        <TouchableOpacity onPress={() => setShowMap(false)}>
+                            <MaterialCommunityIcons name="chevron-up" size={24} color={THEME.textSecondary} />
+                        </TouchableOpacity>
+                    </View>
+                    {loadingLocations ? (
+                        <View style={styles.mapLoading}>
+                            <ActivityIndicator size="small" color={THEME.accent} />
+                            <Text style={styles.mapLoadingText}>Finding locations with your favorites...</Text>
+                        </View>
+                    ) : nearbyLocations.length > 0 && userLocation ? (
+                        <View style={{ height: 350, borderRadius: 8, overflow: 'hidden' }}>
+                            <PinballMap
+                                userLocation={userLocation}
+                                locations={nearbyLocations}
+                                onLocationSelect={handleLocationSelect}
+                                dom={DOM_CONFIG}
+                            />
+                        </View>
+                    ) : userLocation ? (
+                        <View style={styles.mapLoading}>
+                            <MaterialCommunityIcons name="map-marker-off" size={32} color={THEME.textSecondary} />
+                            <Text style={styles.mapLoadingText}>No locations found with your favorites nearby</Text>
+                        </View>
+                    ) : (
+                        <View style={styles.mapLoading}>
+                            <Text style={styles.mapLoadingText}>Enable location to see nearby pinball</Text>
+                        </View>
+                    )}
+
+
+                    {nearbyLocations.length > 0 && !loadingLocations && (
+                        <>
+                            <Text style={styles.mapCount}>
+                                {nearbyLocations.length} location{nearbyLocations.length !== 1 ? 's' : ''} with your favorites nearby
+                            </Text>
+                            {/* Fallback list in case map doesn't load properly */}
+                            <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
+                                {nearbyLocations.slice(0, 10).map(({ location, matchingMachines }) => (
+                                    <TouchableOpacity
+                                        key={location.id}
+                                        style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' }}
+                                        onPress={() => Linking.openURL(`https://pinballmap.com/map?by_location_id=${location.id}`)}
+                                    >
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={{ color: THEME.text, fontSize: 14, fontWeight: '600' }} numberOfLines={1}>{location.name}</Text>
+                                            <Text style={{ color: THEME.textSecondary, fontSize: 12 }} numberOfLines={1}>
+                                                {location.city}, {location.state} • {location.distance?.toFixed(1)} mi
+                                            </Text>
+                                            <Text style={{ color: THEME.accent, fontSize: 11, marginTop: 2 }} numberOfLines={2}>
+                                                🎯 {matchingMachines.join(', ')}
+                                            </Text>
+                                        </View>
+                                        <MaterialCommunityIcons name="chevron-right" size={18} color={THEME.textSecondary} />
+                                    </TouchableOpacity>
+                                ))}
+                            </ScrollView>
+                        </>
+                    )}
+                </View>
+            )}
+
+            {/* Collapsed map toggle */}
+            {activeFilter === 'Favorites' && !showMap && (
+                <TouchableOpacity style={styles.mapCollapsed} onPress={() => setShowMap(true)}>
+                    <MaterialCommunityIcons name="map-marker-radius" size={20} color={THEME.accent} />
+                    <Text style={styles.mapCollapsedText}>Show Nearby Map ({nearbyLocations.length} locations)</Text>
+                    <MaterialCommunityIcons name="chevron-down" size={20} color={THEME.textSecondary} />
+                </TouchableOpacity>
+            )}
 
             {loading && page === 0 && results.length === 0 ? (
                 <View style={styles.loaderContainer}>
@@ -574,6 +734,44 @@ export default function SearchScreen() {
                                     </View>
                                 )}
 
+                                {/* AI Rules Summary */}
+                                {rulesSummary && (
+                                    <View style={styles.rulesSummaryContainer}>
+                                        <View style={styles.aiDisclaimer}>
+                                            <MaterialCommunityIcons name="auto-fix" size={14} color={THEME.accent} />
+                                            <Text style={styles.aiDisclaimerText}>AI Tips & Strategy</Text>
+                                        </View>
+                                        <Text style={styles.rulesSummaryText}>{rulesSummary.summary}</Text>
+
+                                        {rulesSummary.key_shots && rulesSummary.key_shots.length > 0 && (
+                                            <View style={styles.rulesSection}>
+                                                <Text style={styles.rulesSectionTitle}>Key Shots</Text>
+                                                <Text style={styles.rulesSectionContent}>
+                                                    {rulesSummary.key_shots.join(' • ')}
+                                                </Text>
+                                            </View>
+                                        )}
+
+                                        {rulesSummary.modes && rulesSummary.modes.length > 0 && (
+                                            <View style={styles.rulesSection}>
+                                                <Text style={styles.rulesSectionTitle}>Modes</Text>
+                                                <Text style={styles.rulesSectionContent}>
+                                                    {rulesSummary.modes.join(' • ')}
+                                                </Text>
+                                            </View>
+                                        )}
+
+                                        {rulesSummary.scoring_tips && (
+                                            <View style={styles.rulesSection}>
+                                                <Text style={styles.rulesSectionTitle}>Scoring Tips</Text>
+                                                <Text style={styles.rulesSectionContent}>
+                                                    {rulesSummary.scoring_tips}
+                                                </Text>
+                                            </View>
+                                        )}
+                                    </View>
+                                )}
+
                                 {/* Rules Button */}
                                 <TouchableOpacity
                                     style={[styles.favoriteButton, { backgroundColor: '#457b9d', marginBottom: 12 }]}
@@ -590,19 +788,22 @@ export default function SearchScreen() {
                                     <Text style={styles.favoriteButtonText}>Read Rules</Text>
                                 </TouchableOpacity>
 
-                                {/* Add to Favorites Button */}
+                                {/* Toggle Favorites Button */}
                                 <TouchableOpacity
-                                    style={styles.favoriteButton}
+                                    style={[
+                                        styles.favoriteButton,
+                                        favoriteIds.has(selectedMachine?.opdb_id || '') ? { backgroundColor: '#e63946' } : {}
+                                    ]}
                                     onPress={() => handleAddFavorite(selectedMachine!)}
-                                    disabled={isSaving || favoriteIds.has(selectedMachine?.opdb_id || '')}
+                                    disabled={isSaving}
                                 >
                                     <MaterialCommunityIcons
-                                        name="heart-plus"
+                                        name={favoriteIds.has(selectedMachine?.opdb_id || '') ? "heart-minus" : "heart-plus"}
                                         size={20}
                                         color="#fff"
                                     />
                                     <Text style={styles.favoriteButtonText}>
-                                        {isSaving ? 'Saving...' : 'Add to Favorites'}
+                                        {isSaving ? 'Saving...' : favoriteIds.has(selectedMachine?.opdb_id || '') ? 'Remove from Favorites' : 'Add to Favorites'}
                                     </Text>
 
                                 </TouchableOpacity>
@@ -684,7 +885,7 @@ export default function SearchScreen() {
                         <Text style={[styles.modalTitle, { marginTop: 8 }]}>Glossary</Text>
                         <Text style={[styles.modalSubtitle, { marginBottom: 16 }]}>What do these codes mean?</Text>
 
-                        <ScrollView style={{ width: '100%', maxHeight: 300 }}>
+                        <ScrollView style={{ width: '100%', maxHeight: 400 }} showsVerticalScrollIndicator={true}>
                             {Object.entries(ACRONYMS).map(([key, desc]) => (
                                 <View key={key} style={styles.glossaryItem}>
                                     <View style={styles.glossaryBadge}>
@@ -935,6 +1136,48 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         fontStyle: 'italic',
     },
+    // AI Rules Summary Styles
+    rulesSummaryContainer: {
+        width: '100%',
+        backgroundColor: 'rgba(0,180,216,0.08)',
+        borderRadius: 12,
+        padding: 16,
+        marginTop: 16,
+        marginBottom: 8,
+    },
+    aiDisclaimer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 10,
+    },
+    aiDisclaimerText: {
+        color: THEME.accent,
+        fontSize: 11,
+        fontWeight: '600',
+        marginLeft: 6,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+    },
+    rulesSummaryText: {
+        color: THEME.text,
+        fontSize: 14,
+        lineHeight: 20,
+        marginBottom: 12,
+    },
+    rulesSection: {
+        marginTop: 8,
+    },
+    rulesSectionTitle: {
+        color: THEME.accent,
+        fontSize: 12,
+        fontWeight: 'bold',
+        marginBottom: 4,
+    },
+    rulesSectionContent: {
+        color: THEME.textSecondary,
+        fontSize: 13,
+        lineHeight: 18,
+    },
     // Manufacturer Modal Styles
     fullScreenModal: {
         flex: 1,
@@ -1028,5 +1271,57 @@ const styles = StyleSheet.create({
     },
     listContent: {
         paddingBottom: 20,
+    },
+    // Map Styles
+    mapContainer: {
+        backgroundColor: THEME.card,
+        borderRadius: 12,
+        marginBottom: 16,
+        overflow: 'hidden',
+    },
+    mapHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: 12,
+    },
+    mapTitle: {
+        color: THEME.text,
+        fontSize: 16,
+        fontWeight: '600',
+    },
+    map: {
+        width: '100%',
+        height: 200,
+    },
+    mapLoading: {
+        height: 150,
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: 8,
+    },
+    mapLoadingText: {
+        color: THEME.textSecondary,
+        fontSize: 14,
+    },
+    mapCount: {
+        color: THEME.textSecondary,
+        fontSize: 12,
+        padding: 8,
+        textAlign: 'center',
+    },
+    mapCollapsed: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        backgroundColor: THEME.card,
+        padding: 12,
+        borderRadius: 8,
+        marginBottom: 16,
+    },
+    mapCollapsedText: {
+        color: THEME.text,
+        fontSize: 14,
     },
 });

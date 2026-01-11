@@ -41,6 +41,7 @@ export default function DashboardScreen() {
   const [allTimeBest, setAllTimeBest] = useState<{ value: number, machine: string } | null>(null);
   const [topMachines, setTopMachines] = useState<MachineBest[]>([]);
   const [last10Scores, setLast10Scores] = useState<number[]>([]);
+  const [improvement, setImprovement] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // Default chart data if no scores
@@ -69,9 +70,24 @@ export default function DashboardScreen() {
         setAllTimeBest({ value: bestRes[0].value, machine: bestRes[0].name });
       }
 
-      // 3. Last 10 Scores (for Chart)
-      const last10Res: any[] = await db.getAllAsync('SELECT value FROM scores ORDER BY date DESC LIMIT 10');
-      setLast10Scores(last10Res.map(r => r.value));
+      // 3. Last 20 Scores (for Chart + Improvement calc)
+      const last20Res: any[] = await db.getAllAsync('SELECT value FROM scores ORDER BY date DESC LIMIT 20');
+      const last20Scores = last20Res.map(r => r.value);
+      setLast10Scores(last20Scores.slice(0, 10));
+
+      // Calculate improvement: compare last 10 avg vs previous 10 avg
+      if (last20Scores.length >= 15) {
+        const recentAvg = last20Scores.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
+        const previousAvg = last20Scores.slice(10, 20).reduce((a, b) => a + b, 0) / Math.min(10, last20Scores.length - 10);
+        if (previousAvg > 0) {
+          const pctChange = ((recentAvg - previousAvg) / previousAvg) * 100;
+          setImprovement(Math.round(pctChange));
+        } else {
+          setImprovement(null);
+        }
+      } else {
+        setImprovement(null);
+      }
 
       // 4. Top Machines Summary
       // This complex query gets the MAX score for each machine
@@ -169,9 +185,13 @@ export default function DashboardScreen() {
                 : '0'}
             </Text>
           </View>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>+12%</Text>
-          </View>
+          {improvement !== null && (
+            <View style={[styles.badge, improvement < 0 && { backgroundColor: 'rgba(220, 53, 69, 0.2)' }]}>
+              <Text style={[styles.badgeText, improvement < 0 && { color: '#dc3545' }]}>
+                {improvement >= 0 ? '+' : ''}{improvement}%
+              </Text>
+            </View>
+          )}
         </View>
 
         <LineChart
