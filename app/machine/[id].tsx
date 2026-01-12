@@ -3,16 +3,10 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LineChart } from 'react-native-gifted-charts';
+import { THEME } from '../../constants/theme';
 import { getDatabase } from '../../utils/database';
 
-const THEME = {
-    background: '#0d1b2a',
-    card: '#1b263b',
-    accent: '#00b4d8',
-    text: '#e0e1dd',
-    textSecondary: '#778da9',
-    success: '#28a745',
-};
+
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 

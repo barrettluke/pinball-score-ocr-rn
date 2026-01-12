@@ -1,14 +1,8 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { ActivityIndicator, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { THEME } from '../constants/theme';
 
-const THEME = {
-    background: '#0d1b2a',
-    card: '#1b263b',
-    accent: '#00b4d8',
-    text: '#e0e1dd',
-    textSecondary: '#778da9',
-    success: '#28a745',
-};
+
 
 interface Location {
     id: number;

@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { THEME } from '../constants/theme';
 import { getDatabase } from '../utils/database';
 import { OPDBMachine, searchMachines } from '../utils/opdb';
 
@@ -199,15 +200,7 @@ export default function VerifyScoreScreen() {
     );
 }
 
-const THEME = {
-    background: '#0d1b2a',
-    card: '#1b263b',
-    accent: '#00b4d8',
-    text: '#e0e1dd',
-    textSecondary: '#778da9',
-    success: '#2ec4b6',
-    border: '#415a77',
-};
+
 
 const styles = StyleSheet.create({
     container: {

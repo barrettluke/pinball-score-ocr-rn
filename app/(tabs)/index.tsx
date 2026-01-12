@@ -1,20 +1,15 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Image } from 'expo-image';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Dimensions, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { LineChart } from 'react-native-chart-kit';
+import React, { useCallback, useState } from 'react';
+import { Dimensions, RefreshControl, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { LineChart } from 'react-native-gifted-charts';
+
 import { PinballSVG } from '../../components/ui/PinballSVG';
+import { THEME } from '../../constants/theme';
 import { getDatabase } from '../../utils/database';
 
-const THEME = {
-  background: '#0d1b2a',
-  card: '#1b263b',
-  accent: '#00b4d8',
-  text: '#e0e1dd',
-  textSecondary: '#778da9',
-  success: '#28a745',
-};
+
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -35,20 +30,108 @@ interface MachineBest {
   trend: 'up' | 'down' | 'neutral';
 }
 
+const PerformanceChart = React.memo(({ last10Scores, improvement }: { last10Scores: number[], improvement: number | null }) => {
+  // Prepare Data
+  const rawData = last10Scores.length > 0 ? last10Scores.slice().reverse() : [0];
+  const average = rawData.reduce((a, b) => a + b, 0) / rawData.length;
+
+  const lineData = rawData.map(val => ({
+    value: val,
+    dataPointText: val.toString(),
+    textColor: THEME.textSecondary,
+    textShiftY: -8,
+    textShiftX: 0,
+    textFontSize: 10,
+  }));
+
+  // Calculate spacing to ensure fit
+  // We need to account for initialSpacing (20) AND end padding for the last dot/label.
+  // Reduce total width by 60 to be safe.
+  const availableWidth = SCREEN_WIDTH - 64;
+  const computedSpacing = (availableWidth - 60) / Math.max(rawData.length - 1, 1);
+  const maxScore = Math.max(...rawData);
+
+  const avgData = rawData.map((_, i) => ({
+    value: average,
+    // Dynamic Positioning for Start:
+    // Check collision with the FIRST point (index 0)
+    dataPointText: i === 0 ? 'Avg' : '',
+    textColor: 'rgba(255,255,255,0.5)',
+    textShiftY: (rawData[0] > average) ? 25 : -25,
+    textShiftX: 0,
+    textFontSize: 10,
+  }));
+
+  return (
+    <>
+      <View style={styles.chartHeader}>
+        <View>
+          <Text style={styles.chartLabel}>Scores vs Average (Last {rawData.length})</Text>
+          <Text style={styles.chartValue}>
+            {last10Scores.length > 0
+              ? average.toLocaleString(undefined, { maximumFractionDigits: 0 })
+              : '0'}
+          </Text>
+        </View>
+        {improvement !== null && (
+          <View style={[styles.badge, improvement < 0 && styles.badgeNegative]}>
+            <Text style={[styles.badgeText, improvement < 0 && styles.badgeTextNegative]}>
+              {improvement >= 0 ? '+' : ''}{improvement}%
+            </Text>
+          </View>
+        )}
+      </View>
+
+      <View style={{ overflow: 'visible' }}>
+        <LineChart
+          data={lineData}
+          data2={avgData}
+          height={140}
+          width={availableWidth}
+          maxValue={maxScore * 1.1} // Add 10% headroom for labels
+          spacing={computedSpacing}
+          initialSpacing={20}
+          color1={THEME.accent}
+          color2="rgba(255,255,255,0.3)"
+          strokeDashArray2={[10, 5]}
+          thickness1={3}
+          thickness2={2}
+          dataPointsColor1={THEME.accent}
+          dataPointsColor2="rgba(255,255,255,0.0)"
+          hideDataPoints2={false}
+          curved
+          curveType={0}
+          hideRules
+          hideYAxisText
+          hideAxesAndRules
+          yAxisThickness={0}
+          xAxisThickness={0}
+          isAnimated
+          animationDuration={1200}
+          disableScroll
+        />
+      </View>
+
+      <View style={styles.chartFooter}>
+        <Text style={styles.chartFooterText}>PAST</Text>
+        <Text style={styles.chartFooterText}>TODAY</Text>
+      </View>
+    </>
+  );
+});
+
 export default function DashboardScreen() {
   const router = useRouter();
   const [totalGames, setTotalGames] = useState(0);
   const [allTimeBest, setAllTimeBest] = useState<{ value: number, machine: string } | null>(null);
   const [topMachines, setTopMachines] = useState<MachineBest[]>([]);
   const [last10Scores, setLast10Scores] = useState<number[]>([]);
+  const [recentActivity, setRecentActivity] = useState<Score[]>([]);
+  const [showRecent, setShowRecent] = useState(true);
   const [improvement, setImprovement] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Default chart data if no scores
-  const chartData = {
-    labels: Array(10).fill(''),
-    datasets: [{ data: last10Scores.length > 0 ? last10Scores.reverse() : [0, 0, 0, 0, 0] }],
-  };
+
 
   const loadData = async () => {
     try {
@@ -89,7 +172,17 @@ export default function DashboardScreen() {
         setImprovement(null);
       }
 
-      // 4. Top Machines Summary
+      // 4. Recent Activity Feed (Last 3)
+      const recentRes: any[] = await db.getAllAsync(`
+        SELECT s.id, s.value, s.machine_id, m.name as machine_name, s.date
+        FROM scores s
+        LEFT JOIN machines m ON s.machine_id = m.opdb_id
+        ORDER BY s.date DESC
+        LIMIT 3
+      `);
+      setRecentActivity(recentRes);
+
+      // 5. Top Machines Summary
       // This complex query gets the MAX score for each machine
       const topRes: any[] = await db.getAllAsync(`
         SELECT m.opdb_id, m.name, m.image_url, MAX(s.value) as best, MAX(s.date) as last_date
@@ -157,7 +250,7 @@ export default function DashboardScreen() {
         </View>
 
         <View style={styles.statCard}>
-          <View style={[styles.statIconContainer, { backgroundColor: 'rgba(0, 180, 216, 0.2)' }]}>
+          <View style={[styles.statIconContainer, styles.statIconContainerAlt]}>
             <PinballSVG width={24} height={24} color={THEME.accent} />
           </View>
           <Text style={styles.statLabel}>GAMES PLAYED</Text>
@@ -165,262 +258,93 @@ export default function DashboardScreen() {
         </View>
       </View>
 
-      {/* Call To Action */}
-      <TouchableOpacity style={styles.ctaButton} onPress={() => router.push('/scan')}>
-        <MaterialCommunityIcons name="plus-circle" size={24} color="#fff" />
-        <Text style={styles.ctaText}>Log New Score</Text>
-      </TouchableOpacity>
+
 
       {/* Performance Trend */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Performance Trend</Text>
       </View>
       <View style={styles.chartCard}>
-        <View style={styles.chartHeader}>
-          <View>
-            <Text style={styles.chartLabel}>Avg. Score (Last 10)</Text>
-            <Text style={styles.chartValue}>
-              {last10Scores.length > 0
-                ? (last10Scores.reduce((a, b) => a + b, 0) / last10Scores.length).toLocaleString(undefined, { maximumFractionDigits: 0 })
-                : '0'}
-            </Text>
-          </View>
-          {improvement !== null && (
-            <View style={[styles.badge, improvement < 0 && { backgroundColor: 'rgba(220, 53, 69, 0.2)' }]}>
-              <Text style={[styles.badgeText, improvement < 0 && { color: '#dc3545' }]}>
-                {improvement >= 0 ? '+' : ''}{improvement}%
-              </Text>
-            </View>
-          )}
-        </View>
-
-        <LineChart
-          data={chartData}
-          width={SCREEN_WIDTH - 64}
-          height={100}
-          withDots={false}
-          withInnerLines={false}
-          withOuterLines={false}
-          withHorizontalLabels={false}
-          withVerticalLabels={false}
-          chartConfig={{
-            backgroundGradientFrom: THEME.card,
-            backgroundGradientTo: THEME.card,
-            color: (opacity = 1) => `rgba(0, 180, 216, ${opacity})`,
-            strokeWidth: 3,
-          }}
-          bezier
-          style={{ paddingRight: 0, paddingLeft: 0 }}
-        />
-
-        <View style={styles.chartFooter}>
-          <Text style={styles.chartFooterText}>JAN 1</Text>
-          <Text style={styles.chartFooterText}>TODAY</Text>
-        </View>
+        <PerformanceChart last10Scores={last10Scores} improvement={improvement} />
       </View>
+
+      {/* Recent Activity Feed */}
+      {
+        recentActivity.length > 0 && (
+          <>
+            <TouchableOpacity
+              style={styles.sectionHeader}
+              onPress={() => setShowRecent(!showRecent)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.sectionTitle}>Recent Activity</Text>
+              <MaterialCommunityIcons
+                name={showRecent ? "chevron-up" : "chevron-down"}
+                size={24}
+                color={THEME.textSecondary}
+              />
+            </TouchableOpacity>
+
+            {showRecent && (
+              <View style={styles.recentList}>
+                {recentActivity.map((score) => (
+                  <View key={score.id} style={styles.recentItem}>
+                    <View style={styles.recentDateBox}>
+                      <Text style={styles.recentDateText}>
+                        {new Date(score.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                      </Text>
+                      <Text style={styles.recentTimeText}>
+                        {new Date(score.date).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+                    <View style={styles.recentInfo}>
+                      <Text style={styles.recentMachine} numberOfLines={1}>
+                        {score.machine_name || 'Unknown Machine'}
+                      </Text>
+                      <Text style={styles.recentScore}>
+                        {score.value.toLocaleString()}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </>
+        )
+      }
 
       {/* Top Machine Records */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Top Machine Records</Text>
       </View>
 
-      {topMachines.length === 0 ? (
-        <View style={[styles.listCard, { alignItems: 'center', padding: 20 }]}>
-          <Text style={{ color: THEME.textSecondary }}>No records found</Text>
-        </View>
-      ) : (
-        topMachines.map((m, index) => (
-          <TouchableOpacity key={index} style={styles.listCard} onPress={() => router.push(`/machine/${m.machine_id}`)}>
-            <View style={styles.machineIcon}>
-              {m.machine_image ? (
-                <Image source={{ uri: m.machine_image }} style={{ width: '100%', height: '100%', borderRadius: 8 }} contentFit="cover" />
-              ) : (
-                <MaterialCommunityIcons name="gamepad-circle" size={24} color={THEME.textSecondary} />
-              )}
-            </View>
-            <View style={styles.listContent}>
-              <Text style={styles.listTitle}>{m.machine_name}</Text>
-              <Text style={styles.listSubtitle}>{m.best_score.toLocaleString()}</Text>
-            </View>
-            <MaterialCommunityIcons name="chevron-right" size={24} color={THEME.textSecondary} />
-          </TouchableOpacity>
-        ))
-      )}
+      {
+        topMachines.length === 0 ? (
+          <View style={styles.listCardEmpty}>
+            <Text style={styles.emptyText}>No records found</Text>
+          </View>
+        ) : (
+          topMachines.map((m, index) => (
+            <TouchableOpacity key={index} style={styles.listCard} onPress={() => router.push(`/machine/${m.machine_id}`)}>
+              <View style={styles.machineIcon}>
+                {m.machine_image ? (
+                  <Image source={{ uri: m.machine_image }} style={styles.machineImage} contentFit="cover" />
+                ) : (
+                  <MaterialCommunityIcons name="gamepad-circle" size={24} color={THEME.textSecondary} />
+                )}
+              </View>
+              <View style={styles.listContent}>
+                <Text style={styles.listTitle}>{m.machine_name}</Text>
+                <Text style={styles.listSubtitle}>{m.best_score.toLocaleString()}</Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={24} color={THEME.textSecondary} />
+            </TouchableOpacity>
+          ))
+        )
+      }
 
-    </ScrollView>
+    </ScrollView >
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: THEME.background,
-    padding: 16,
-    paddingTop: 60,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  greeting: {
-    color: THEME.textSecondary,
-    fontSize: 14,
-  },
-  username: {
-    color: THEME.text,
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 24,
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: THEME.card,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-  },
-  statIconContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: 'rgba(249, 199, 79, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  statLabel: {
-    color: THEME.textSecondary,
-    fontSize: 10,
-    fontWeight: 'bold',
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  statValue: {
-    color: THEME.text,
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 2,
-  },
-  statSubtext: {
-    color: THEME.textSecondary,
-    fontSize: 12,
-  },
-  ctaButton: {
-    backgroundColor: THEME.accent,
-    borderRadius: 12,
-    height: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginBottom: 32,
-    shadowColor: THEME.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  ctaText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    color: THEME.text,
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  linkText: {
-    color: THEME.accent,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  chartCard: {
-    backgroundColor: THEME.card,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 32,
-    overflow: 'hidden',
-  },
-  chartHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 24,
-  },
-  chartLabel: {
-    color: THEME.textSecondary,
-    fontSize: 14,
-    marginBottom: 4,
-  },
-  chartValue: {
-    color: THEME.text,
-    fontSize: 32,
-    fontWeight: 'bold',
-  },
-  badge: {
-    backgroundColor: 'rgba(40, 167, 69, 0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  badgeText: {
-    color: THEME.success,
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  chartFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 8,
-  },
-  chartFooterText: {
-    color: THEME.textSecondary,
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  listCard: {
-    backgroundColor: THEME.card,
-    borderRadius: 12,
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  machineIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  listContent: {
-    flex: 1,
-  },
-  listTitle: {
-    color: THEME.text,
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 2,
-  },
-  listSubtitle: {
-    color: THEME.accent,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-});
+import { styles } from '../../styles/dashboard.styles';
